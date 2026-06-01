@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Animated, PanResponder, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Alert, Animated, PanResponder, Pressable, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
 
-import { AppBottomNav } from "@/components/AppBottomNav";
+import { AppIcon } from "@/components/AppIcon";
 import { DEFAULT_FACE_API_BASE_URL, normalizeApiBaseUrl } from "@/services/config/faceBackend";
 import { getEngineSetting, getFaceDatabase, getUnsyncedAttendanceRecords } from "@/services/storage/database";
 import { isNetworkUsable } from "@/services/sync/syncService";
@@ -17,7 +17,7 @@ const posters = [
     badge: "Offline Ready",
     metric: "Local AI",
     title: "Face detection, liveness and recognition on device",
-    description: "Secure attendance flow continues at toll sites even when network access is unavailable.",
+    description: "Secure attendance continues at field sites even when network access is unavailable.",
   },
   {
     accent: "#F59E0B",
@@ -25,7 +25,7 @@ const posters = [
     badge: "Cloud Sync",
     metric: "AWS Queue",
     title: "Buffered records sync safely when internet returns",
-    description: "Attendance stays in the local queue first, then moves to cloud/backend after connectivity is restored.",
+    description: "Attendance is stored locally first, then synced after connectivity is restored.",
   },
 ];
 
@@ -35,8 +35,30 @@ export default function Index() {
   const [serverStatus, setServerStatus] = useState("Configured");
   const [onDeviceStatus, setOnDeviceStatus] = useState("Native engine ready to check");
   const [syncStatus, setSyncStatus] = useState("Offline queue enabled");
+  const [scrollY] = useState(() => new Animated.Value(0));
   const [posterTranslateX] = useState(() => new Animated.Value(0));
   const [posterOpacity] = useState(() => new Animated.Value(1));
+
+  const appBarMargin = scrollY.interpolate({
+    extrapolate: "clamp",
+    inputRange: [0, 72],
+    outputRange: [18, 0],
+  });
+  const appBarRadius = scrollY.interpolate({
+    extrapolate: "clamp",
+    inputRange: [0, 72],
+    outputRange: [24, 0],
+  });
+  const appBarTop = scrollY.interpolate({
+    extrapolate: "clamp",
+    inputRange: [0, 72],
+    outputRange: [14, 0],
+  });
+  const appBarHeight = scrollY.interpolate({
+    extrapolate: "clamp",
+    inputRange: [0, 72],
+    outputRange: [56, 64],
+  });
 
   const animatePoster = useCallback(
     (direction: 1 | -1) => {
@@ -65,15 +87,15 @@ export default function Index() {
   const posterPanResponder = useMemo(
     () =>
       PanResponder.create({
-      onMoveShouldSetPanResponder: (_, gesture) =>
-        Math.abs(gesture.dx) > 18 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
-      onPanResponderRelease: (_, gesture) => {
-        if (gesture.dx < -36) {
-          animatePoster(1);
-        } else if (gesture.dx > 36) {
-          animatePoster(-1);
-        }
-      },
+        onMoveShouldSetPanResponder: (_, gesture) =>
+          Math.abs(gesture.dx) > 18 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
+        onPanResponderRelease: (_, gesture) => {
+          if (gesture.dx < -36) {
+            animatePoster(1);
+          } else if (gesture.dx > 36) {
+            animatePoster(-1);
+          }
+        },
       }),
     [animatePoster],
   );
@@ -140,13 +162,40 @@ export default function Index() {
 
   return (
     <View style={styles.screen}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.container}>
-        <View style={styles.appBar}>
-          <Text style={styles.appBarTitle}>DSEAS</Text>
-        </View>
+      <Animated.View
+        style={[
+          styles.appBar,
+          {
+            borderRadius: appBarRadius,
+            height: appBarHeight,
+            marginHorizontal: appBarMargin,
+            top: appBarTop,
+          },
+        ]}
+      >
+        <View style={styles.appBarSide} />
+        <Text style={styles.appBarTitle}>DSEAS</Text>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => Alert.alert("Notifications", "No new DSEAS alerts right now.")}
+          style={styles.notificationButton}
+        >
+          <AppIcon android="notifications" color="#1677FF" fallback="N" ios="bell.fill" size={22} />
+        </Pressable>
+      </Animated.View>
 
+      <Animated.ScrollView
+        contentContainerStyle={styles.container}
+        onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], {
+          useNativeDriver: false,
+        })}
+        scrollEventThrottle={16}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.welcomeBlock}>
-          <Text style={styles.wave}>👋</Text>
+          <View style={styles.waveBadge}>
+            <AppIcon android="waving_hand" color="#1677FF" fallback="Hi" ios="hand.wave.fill" size={24} />
+          </View>
           <View style={styles.welcomeCopy}>
             <Text style={styles.welcomeText}>Welcome to</Text>
             <Text style={styles.welcomeTitle}>NHAI-DSEAS</Text>
@@ -170,8 +219,12 @@ export default function Index() {
             <Text style={[styles.posterBadge, { color: poster.accent }]}>{poster.badge}</Text>
             <Text style={styles.posterMetric}>{poster.metric}</Text>
           </View>
-          <Text style={styles.posterTitle}>{poster.title}</Text>
-          <Text style={styles.posterDescription}>{poster.description}</Text>
+          <Text numberOfLines={2} style={styles.posterTitle}>
+            {poster.title}
+          </Text>
+          <Text numberOfLines={2} style={styles.posterDescription}>
+            {poster.description}
+          </Text>
           <View style={styles.posterFooter}>
             <View style={styles.posterMiniCard}>
               <Text style={styles.posterMiniValue}>320</Text>
@@ -195,13 +248,13 @@ export default function Index() {
 
         <Pressable accessibilityRole="button" onPress={openRecognize} style={styles.recognizeCard}>
           <View style={styles.recognizeIcon}>
-            <Text style={styles.recognizeIconText}>◎</Text>
+            <AppIcon android="person_search" color="#1677FF" fallback="ID" ios="person.crop.circle.badge.checkmark" size={28} />
           </View>
           <View style={styles.recognizeCopy}>
             <Text style={styles.recognizeTitle}>Recognition & Mark</Text>
             <Text style={styles.recognizeSubtitle}>Identify enrolled faces and mark attendance securely.</Text>
           </View>
-          <Text style={styles.recognizeArrow}>›</Text>
+          <AppIcon android="chevron_right" color="#1677FF" fallback=">" ios="chevron.right" size={24} />
         </Pressable>
 
         <View style={styles.statusPanel}>
@@ -217,9 +270,7 @@ export default function Index() {
             Secure, offline-first digital enforcement and attendance support for field operations.
           </Text>
         </View>
-      </ScrollView>
-
-      <AppBottomNav active="home" apiBaseUrl={normalizeApiBaseUrl(apiBaseUrl)} />
+      </Animated.ScrollView>
     </View>
   );
 }
@@ -244,16 +295,30 @@ const styles = StyleSheet.create({
   },
   appBar: {
     alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.56)",
-    borderColor: "rgba(226,232,240,0.82)",
-    borderRadius: 24,
+    backgroundColor: "rgba(255,255,255,0.94)",
+    borderColor: "rgba(226,232,240,0.86)",
     borderWidth: 1,
-    height: 56,
-    justifyContent: "center",
+    elevation: 10,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    left: 0,
+    paddingHorizontal: 14,
+    position: "absolute",
+    right: 0,
+    shadowColor: "#0F172A",
+    shadowOffset: { height: 10, width: 0 },
+    shadowOpacity: 0.1,
+    shadowRadius: 22,
+    zIndex: 20,
+  },
+  appBarSide: {
+    height: 42,
+    width: 42,
   },
   appBarTitle: {
     color: "#0F172A",
     fontSize: 18,
+    
     fontWeight: "900",
     letterSpacing: 3,
   },
@@ -263,8 +328,8 @@ const styles = StyleSheet.create({
   container: {
     gap: 18,
     padding: 18,
-    paddingBottom: 124,
-    paddingTop: 26,
+    paddingBottom: 150,
+    paddingTop: 110,
   },
   greenDot: {
     backgroundColor: "#22C55E",
@@ -286,10 +351,20 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     letterSpacing: -0.8,
   },
+  notificationButton: {
+    alignItems: "center",
+    backgroundColor: "#EAF2FF",
+    borderColor: "#D8E8FF",
+    borderRadius: 21,
+    borderWidth: 1,
+    height: 42,
+    justifyContent: "center",
+    width: 42,
+  },
   poster: {
     borderRadius: 32,
     elevation: 8,
-    height: 210,
+    height: 226,
     overflow: "hidden",
     padding: 18,
     shadowColor: "#0F172A",
@@ -310,8 +385,8 @@ const styles = StyleSheet.create({
   posterDescription: {
     color: "#D7E3F7",
     fontSize: 13,
-    lineHeight: 19,
-    marginTop: 6,
+    lineHeight: 18,
+    marginTop: 4,
     maxWidth: "88%",
   },
   posterDot: {
@@ -330,7 +405,7 @@ const styles = StyleSheet.create({
   posterFooter: {
     flexDirection: "row",
     gap: 10,
-    marginTop: 14,
+    marginTop: 8,
   },
   posterGlow: {
     borderRadius: 120,
@@ -353,7 +428,8 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     borderWidth: 1,
     flex: 1,
-    padding: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
   posterMiniLabel: {
     color: "#C7D2FE",
@@ -378,22 +454,17 @@ const styles = StyleSheet.create({
   },
   posterTitle: {
     color: "#FFFFFF",
-    fontSize: 21,
+    fontSize: 20,
     fontWeight: "900",
     letterSpacing: -0.5,
-    lineHeight: 27,
-    marginTop: 20,
+    lineHeight: 25,
+    marginTop: 14,
     maxWidth: "92%",
   },
   posterTopRow: {
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "space-between",
-  },
-  recognizeArrow: {
-    color: "#1677FF",
-    fontSize: 34,
-    fontWeight: "700",
   },
   recognizeCard: {
     alignItems: "center",
@@ -421,11 +492,6 @@ const styles = StyleSheet.create({
     height: 54,
     justifyContent: "center",
     width: 54,
-  },
-  recognizeIconText: {
-    color: "#1677FF",
-    fontSize: 28,
-    fontWeight: "900",
   },
   recognizeSubtitle: {
     color: "#64748B",
@@ -480,7 +546,17 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   wave: {
-    fontSize: 34,
+    color: "#1677FF",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  waveBadge: {
+    alignItems: "center",
+    backgroundColor: "#EAF2FF",
+    borderRadius: 18,
+    height: 42,
+    justifyContent: "center",
+    width: 42,
   },
   welcomeBlock: {
     alignItems: "center",

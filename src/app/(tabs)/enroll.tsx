@@ -4,6 +4,7 @@ import { CameraView, type CameraCapturedPicture, type CameraType, useCameraPermi
 import { useLocalSearchParams } from "expo-router";
 
 import { ActionButton } from "@/components/ActionButton";
+import { AppIcon } from "@/components/AppIcon";
 import { withTimeout } from "@/services/async/withTimeout";
 import { DEFAULT_FACE_API_BASE_URL } from "@/services/config/faceBackend";
 import { BackendFaceEngine } from "@/services/face/backendFaceEngine";
@@ -122,7 +123,16 @@ export default function EnrollScreen() {
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
+    <View style={styles.screen}>
+      <View style={styles.appBar}>
+        <View style={styles.appBarIcon}>
+          <AppIcon android="person_add" color="#1677FF" fallback="+" ios="person.crop.circle.badge.plus" size={23} />
+        </View>
+        <Text style={styles.appBarTitle}>Enroll</Text>
+        <View style={styles.appBarIconGhost} />
+      </View>
+
+    <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
       <View style={styles.formCard}>
         <Text style={styles.label}>Name</Text>
         <TextInput onChangeText={setName} placeholder="Person name" style={styles.input} value={name} />
@@ -162,10 +172,47 @@ export default function EnrollScreen() {
         </View>
       ) : null}
     </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  appBar: {
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.94)",
+    borderColor: "rgba(226,232,240,0.86)",
+    borderRadius: 24,
+    borderWidth: 1,
+    elevation: 8,
+    flexDirection: "row",
+    height: 58,
+    justifyContent: "space-between",
+    marginHorizontal: 18,
+    marginTop: 24,
+    paddingHorizontal: 12,
+    shadowColor: "#0F172A",
+    shadowOffset: { height: 10, width: 0 },
+    shadowOpacity: 0.1,
+    shadowRadius: 22,
+  },
+  appBarIcon: {
+    alignItems: "center",
+    backgroundColor: "#EAF2FF",
+    borderRadius: 19,
+    height: 38,
+    justifyContent: "center",
+    width: 38,
+  },
+  appBarIconGhost: {
+    height: 38,
+    width: 38,
+  },
+  appBarTitle: {
+    color: "#0F172A",
+    fontSize: 18,
+    fontWeight: "900",
+    letterSpacing: 1.2,
+  },
   camera: {
     aspectRatio: 3 / 4,
     borderRadius: 24,
@@ -190,6 +237,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#F7FAFF",
     gap: 16,
     padding: 18,
+    paddingBottom: 154,
   },
   controls: {
     gap: 10,
@@ -237,6 +285,10 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     gap: 10,
     padding: 16,
+  },
+  screen: {
+    backgroundColor: "#F7FAFF",
+    flex: 1,
   },
   sectionTitle: {
     color: "#0F172A",

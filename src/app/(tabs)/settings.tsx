@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { Alert, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { router } from "expo-router";
 
 import { ActionButton } from "@/components/ActionButton";
-import { AppBottomNav } from "@/components/AppBottomNav";
+import { AppIcon } from "@/components/AppIcon";
 import { withTimeout } from "@/services/async/withTimeout";
 import { DEFAULT_FACE_API_BASE_URL, getDeviceBackendHint, normalizeApiBaseUrl } from "@/services/config/faceBackend";
 import { BackendFaceEngine } from "@/services/face/backendFaceEngine";
@@ -132,6 +132,12 @@ export default function SettingsScreen() {
 
   async function openRoute(pathname: "/detect" | "/recognize" | "/enroll" | "/logs") {
     const normalized = await saveBackendUrl();
+
+    if (pathname === "/enroll") {
+      router.navigate({ pathname, params: { apiBaseUrl: normalized } } as never);
+      return;
+    }
+
     router.push({ pathname, params: { apiBaseUrl: normalized } } as never);
   }
 
@@ -139,25 +145,34 @@ export default function SettingsScreen() {
     <View style={styles.screen}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.container}>
         <View style={styles.appBar}>
-          <Text style={styles.appBarTitle}>DSEAS</Text>
-        </View>
-
-        <View style={styles.headerCard}>
-          <Text style={styles.eyebrow}>Settings</Text>
-          <Text style={styles.title}>System Control Center</Text>
-          <Text style={styles.subtitle}>
-            Manage backend connectivity, local ONNX engine checks, detection tools, logs, and queue sync.
-          </Text>
-        </View>
-
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardIcon}>🌐</Text>
-            <View style={styles.cardTitleBlock}>
-              <Text style={styles.cardTitle}>Backend</Text>
-              <Text style={styles.cardSubtitle}>Flask/API endpoint used for server workflows.</Text>
-            </View>
+          <View style={styles.appBarIcon}>
+            <AppIcon android="settings" color="#1677FF" fallback="S" ios="gearshape.fill" size={23} />
           </View>
+          <Text style={styles.appBarTitle}>Settings</Text>
+          <View style={styles.appBarGhost} />
+        </View>
+
+        <View style={styles.hero}>
+          <Text style={styles.eyebrow}>Control Center</Text>
+          <Text style={styles.title}>DSEAS Operations</Text>
+          <Text style={styles.subtitle}>Backend, local AI engine, diagnostics, logs and queue sync in one secure hub.</Text>
+        </View>
+
+        <View style={styles.statusRibbon}>
+          <AppIcon android="verified_user" color="#22C55E" fallback="OK" ios="checkmark.shield.fill" size={22} />
+          <View style={styles.statusRibbonCopy}>
+            <Text style={styles.statusRibbonTitle}>Latest Status</Text>
+            <Text style={styles.statusRibbonText}>{status}</Text>
+          </View>
+        </View>
+
+        <View style={[styles.panel, styles.backendPanel]}>
+          <SettingHeader
+            android="dns"
+            ios="server.rack"
+            subtitle="Server workflows and cloud bridge"
+            title="Backend Endpoint"
+          />
           <TextInput
             autoCapitalize="none"
             autoCorrect={false}
@@ -174,16 +189,11 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardIcon}>🧠</Text>
-            <View style={styles.cardTitleBlock}>
-              <Text style={styles.cardTitle}>On-device Engine</Text>
-              <Text style={styles.cardSubtitle}>Bundled SCRFD detector and EdgeFace recognizer.</Text>
-            </View>
-          </View>
-          <ActionButton
+        <View style={styles.featureGrid}>
+          <FeatureTile
+            android="psychology"
             disabled={isBusy}
+            ios="brain.head.profile"
             onPress={() => {
               Alert.alert(
                 "On-device engine",
@@ -194,51 +204,89 @@ export default function SettingsScreen() {
                 ],
               );
             }}
-            title="Check On-device Engine Status"
-            variant="secondary"
+            title="Engine Status"
+          />
+          <FeatureTile
+            android="face"
+            disabled={isBusy}
+            ios="faceid"
+            onPress={() => openRoute("/detect")}
+            title="Detect Faces"
+          />
+          <FeatureTile
+            android="history"
+            disabled={isBusy}
+            ios="clock.arrow.circlepath"
+            onPress={() => openRoute("/logs")}
+            title="View Logs"
+          />
+          <FeatureTile
+            android="person_search"
+            disabled={isBusy}
+            ios="person.crop.circle.badge.checkmark"
+            onPress={() => openRoute("/recognize")}
+            title="Recognize"
           />
         </View>
 
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardIcon}>🧭</Text>
-            <View style={styles.cardTitleBlock}>
-              <Text style={styles.cardTitle}>Tools</Text>
-              <Text style={styles.cardSubtitle}>Open diagnostics and operational screens.</Text>
-            </View>
-          </View>
-          <View style={styles.actionGrid}>
-            <ActionButton disabled={isBusy} onPress={() => openRoute("/detect")} title="Detect Faces" />
-            <ActionButton disabled={isBusy} onPress={() => openRoute("/logs")} title="View Logs" variant="secondary" />
-            <ActionButton
-              disabled={isBusy}
-              onPress={() => openRoute("/recognize")}
-              title="Recognition & Mark"
-              variant="secondary"
-            />
-            <ActionButton disabled={isBusy} onPress={() => openRoute("/enroll")} title="Enroll Face" variant="secondary" />
-          </View>
-        </View>
-
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardIcon}>🔁</Text>
-            <View style={styles.cardTitleBlock}>
-              <Text style={styles.cardTitle}>Queue & Sync</Text>
-              <Text style={styles.cardSubtitle}>{queueStatus}</Text>
-            </View>
-          </View>
+        <View style={styles.panel}>
+          <SettingHeader android="sync" ios="arrow.triangle.2.circlepath" subtitle={queueStatus} title="Queue & Sync" />
           <ActionButton disabled={isBusy} onPress={runSync} title="Sync Local Queue" />
         </View>
-
-        <View style={styles.statusBox}>
-          <Text style={styles.statusTitle}>Latest Status</Text>
-          <Text style={styles.statusText}>{status}</Text>
-        </View>
       </ScrollView>
-
-      <AppBottomNav active="settings" apiBaseUrl={normalizeApiBaseUrl(apiBaseUrl)} />
     </View>
+  );
+}
+
+function SettingHeader({
+  android,
+  ios,
+  subtitle,
+  title,
+}: {
+  android: string;
+  ios: string;
+  subtitle: string;
+  title: string;
+}) {
+  return (
+    <View style={styles.settingHeader}>
+      <View style={styles.settingIcon}>
+        <AppIcon android={android} color="#1677FF" fallback="I" ios={ios} size={24} />
+      </View>
+      <View style={styles.settingHeaderCopy}>
+        <Text style={styles.settingTitle}>{title}</Text>
+        <Text style={styles.settingSubtitle}>{subtitle}</Text>
+      </View>
+    </View>
+  );
+}
+
+function FeatureTile({
+  android,
+  disabled,
+  ios,
+  onPress,
+  title,
+}: {
+  android: string;
+  disabled?: boolean;
+  ios: string;
+  onPress: () => void;
+  title: string;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => [styles.featureTile, disabled && styles.disabled, pressed && !disabled && styles.pressed]}
+    >
+      <View style={styles.featureIcon}>
+        <AppIcon android={android} color="#1677FF" fallback="I" ios={ios} size={25} />
+      </View>
+      <Text style={styles.featureTitle}>{title}</Text>
+    </Pressable>
   );
 }
 
@@ -248,53 +296,49 @@ const styles = StyleSheet.create({
   },
   appBar: {
     alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.56)",
-    borderColor: "rgba(226,232,240,0.82)",
+    backgroundColor: "rgba(255,255,255,0.94)",
+    borderColor: "rgba(226,232,240,0.86)",
     borderRadius: 24,
     borderWidth: 1,
-    height: 56,
+    elevation: 8,
+    flexDirection: "row",
+    height: 58,
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
+    shadowColor: "#0F172A",
+    shadowOffset: { height: 10, width: 0 },
+    shadowOpacity: 0.1,
+    shadowRadius: 22,
+  },
+  appBarGhost: {
+    height: 38,
+    width: 38,
+  },
+  appBarIcon: {
+    alignItems: "center",
+    backgroundColor: "#EAF2FF",
+    borderRadius: 19,
+    height: 38,
     justifyContent: "center",
+    width: 38,
   },
   appBarTitle: {
     color: "#0F172A",
     fontSize: 18,
     fontWeight: "900",
-    letterSpacing: 3,
+    letterSpacing: 1.2,
   },
-  card: {
-    backgroundColor: "#FFFFFF",
-    borderColor: "#E2E8F0",
-    borderRadius: 26,
-    borderWidth: 1,
-    gap: 14,
-    padding: 18,
-  },
-  cardHeader: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: 12,
-  },
-  cardIcon: {
-    fontSize: 28,
-  },
-  cardSubtitle: {
-    color: "#64748B",
-    fontSize: 13,
-    lineHeight: 19,
-  },
-  cardTitle: {
-    color: "#0F172A",
-    fontSize: 17,
-    fontWeight: "900",
-  },
-  cardTitleBlock: {
-    flex: 1,
-    gap: 3,
+  backendPanel: {
+    marginTop: -4,
   },
   container: {
     gap: 16,
     padding: 18,
-    paddingBottom: 124,
+    paddingBottom: 154,
+    paddingTop: 24,
+  },
+  disabled: {
+    opacity: 0.55,
   },
   eyebrow: {
     color: "#93C5FD",
@@ -303,7 +347,41 @@ const styles = StyleSheet.create({
     letterSpacing: 1.4,
     textTransform: "uppercase",
   },
-  headerCard: {
+  featureGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  featureIcon: {
+    alignItems: "center",
+    backgroundColor: "#EAF2FF",
+    borderRadius: 18,
+    height: 42,
+    justifyContent: "center",
+    width: 42,
+  },
+  featureTile: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E2E8F0",
+    borderRadius: 24,
+    borderWidth: 1,
+    elevation: 3,
+    gap: 12,
+    minHeight: 118,
+    padding: 16,
+    shadowColor: "#0F172A",
+    shadowOffset: { height: 8, width: 0 },
+    shadowOpacity: 0.07,
+    shadowRadius: 16,
+    width: "48%",
+  },
+  featureTitle: {
+    color: "#0F172A",
+    fontSize: 15,
+    fontWeight: "900",
+    lineHeight: 20,
+  },
+  hero: {
     backgroundColor: "#0F172A",
     borderRadius: 30,
     gap: 8,
@@ -324,26 +402,71 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
+  panel: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E2E8F0",
+    borderRadius: 28,
+    borderWidth: 1,
+    gap: 14,
+    padding: 18,
+  },
+  pressed: {
+    transform: [{ scale: 0.98 }],
+  },
   screen: {
     backgroundColor: "#F7FAFF",
     flex: 1,
   },
-  statusBox: {
+  settingHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 12,
+  },
+  settingHeaderCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  settingIcon: {
+    alignItems: "center",
     backgroundColor: "#EAF2FF",
-    borderRadius: 22,
-    gap: 6,
+    borderRadius: 20,
+    height: 46,
+    justifyContent: "center",
+    width: 46,
+  },
+  settingSubtitle: {
+    color: "#64748B",
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  settingTitle: {
+    color: "#0F172A",
+    fontSize: 17,
+    fontWeight: "900",
+  },
+  statusRibbon: {
+    alignItems: "center",
+    backgroundColor: "#ECFDF5",
+    borderColor: "#BBF7D0",
+    borderRadius: 24,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 12,
     padding: 16,
   },
-  statusText: {
-    color: "#124A9C",
-    fontSize: 14,
-    lineHeight: 20,
+  statusRibbonCopy: {
+    flex: 1,
+    gap: 2,
   },
-  statusTitle: {
-    color: "#124A9C",
+  statusRibbonText: {
+    color: "#166534",
     fontSize: 13,
+    lineHeight: 19,
+  },
+  statusRibbonTitle: {
+    color: "#14532D",
+    fontSize: 14,
     fontWeight: "900",
-    textTransform: "uppercase",
   },
   subtitle: {
     color: "#CBD5E1",

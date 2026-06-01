@@ -1,32 +1,26 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { router } from "expo-router";
+
+import { AppIcon } from "@/components/AppIcon";
 
 type BottomNavItem = "home" | "enroll" | "settings";
 
 type AppBottomNavProps = {
   active: BottomNavItem;
-  apiBaseUrl?: string;
+  onHomePress: () => void;
+  onEnrollPress: () => void;
+  onSettingsPress: () => void;
 };
 
-function navigateTo(pathname: "/" | "/enroll" | "/settings", apiBaseUrl?: string) {
-  if (apiBaseUrl) {
-    router.navigate({ pathname, params: { apiBaseUrl } } as never);
-    return;
-  }
-
-  router.navigate({ pathname } as never);
-}
-
-export function AppBottomNav({ active, apiBaseUrl }: AppBottomNavProps) {
+export function AppBottomNav({ active, onHomePress, onEnrollPress, onSettingsPress }: AppBottomNavProps) {
   return (
     <View pointerEvents="box-none" style={styles.wrapper}>
       <View style={styles.bar}>
         <Pressable
           accessibilityRole="button"
-          onPress={() => navigateTo("/", apiBaseUrl)}
+          onPress={onHomePress}
           style={[styles.sideItem, active === "home" && styles.activeSideItem]}
         >
-          <Text style={styles.sideIcon}>⌂</Text>
+          <AppIcon android="home" color={active === "home" ? "#0B5FEA" : "#0F172A"} fallback="H" ios="house.fill" size={23} />
           <Text style={[styles.sideLabel, active === "home" && styles.activeSideLabel]}>Home</Text>
         </Pressable>
 
@@ -34,20 +28,26 @@ export function AppBottomNav({ active, apiBaseUrl }: AppBottomNavProps) {
 
         <Pressable
           accessibilityRole="button"
-          onPress={() => navigateTo("/settings", apiBaseUrl)}
+          onPress={onSettingsPress}
           style={[styles.sideItem, active === "settings" && styles.activeSideItem]}
         >
-          <Text style={styles.sideIcon}>⚙</Text>
+          <AppIcon
+            android="settings"
+            color={active === "settings" ? "#0B5FEA" : "#0F172A"}
+            fallback="S"
+            ios="gearshape.fill"
+            size={23}
+          />
           <Text style={[styles.sideLabel, active === "settings" && styles.activeSideLabel]}>Settings</Text>
         </Pressable>
       </View>
 
       <Pressable
         accessibilityRole="button"
-        onPress={() => navigateTo("/enroll", apiBaseUrl)}
+        onPress={onEnrollPress}
         style={[styles.enrollButton, active === "enroll" && styles.activeEnrollButton]}
       >
-        <Text style={styles.enrollIcon}>＋</Text>
+        <AppIcon android="person_add" color="#FFFFFF" fallback="+" ios="person.crop.circle.badge.plus" size={24} />
         <Text style={styles.enrollLabel}>Enroll</Text>
       </Pressable>
     </View>
@@ -95,12 +95,6 @@ const styles = StyleSheet.create({
     top: -22,
     width: 66,
   },
-  enrollIcon: {
-    color: "#FFFFFF",
-    fontSize: 22,
-    fontWeight: "900",
-    lineHeight: 23,
-  },
   enrollLabel: {
     color: "#FFFFFF",
     fontSize: 10,
@@ -109,11 +103,6 @@ const styles = StyleSheet.create({
   },
   notchSpace: {
     width: 74,
-  },
-  sideIcon: {
-    color: "#0F172A",
-    fontSize: 22,
-    fontWeight: "900",
   },
   sideItem: {
     alignItems: "center",
