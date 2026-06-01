@@ -37,6 +37,14 @@ export type NewAttendanceRecord = {
 };
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
+let faceEmbeddingDatabaseCache:
+  | {
+      loadedAt: number;
+      value: Record<string, { name: string; embeddings: number[][] }>;
+    }
+  | null = null;
+
+const FACE_EMBEDDING_CACHE_TTL_MS = 30000;
 
 export async function getFaceDatabase() {
   if (!databasePromise) {
@@ -101,6 +109,8 @@ export async function saveLocalFaceMetadata(personId: string, name: string, embe
     timestamp,
     timestamp,
   );
+
+  faceEmbeddingDatabaseCache = null;
 }
 
 export async function getLocalFaces() {
@@ -110,6 +120,10 @@ export async function getLocalFaces() {
 }
 
 export async function getLocalFaceEmbeddingDatabase() {
+  if (faceEmbeddingDatabaseCache && Date.now() - faceEmbeddingDatabaseCache.loadedAt < FACE_EMBEDDING_CACHE_TTL_MS) {
+    return faceEmbeddingDatabaseCache.value;
+  }
+
   const faces = await getLocalFaces();
   const database: Record<string, { name: string; embeddings: number[][] }> = {};
 
@@ -128,6 +142,11 @@ export async function getLocalFaceEmbeddingDatabase() {
       // Ignore malformed local records so one bad row cannot break offline recognition.
     }
   }
+
+  faceEmbeddingDatabaseCache = {
+    loadedAt: Date.now(),
+    value: database,
+  };
 
   return database;
 }

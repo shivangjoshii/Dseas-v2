@@ -40,6 +40,8 @@ type LoadedRuntime = {
 let runtimePromise: Promise<LoadedRuntime> | null = null;
 const SESSION_LOAD_TIMEOUT_MS = 20000;
 const RUNTIME_LOAD_TIMEOUT_MS = 45000;
+const DEFAULT_DETECTION_CONFIDENCE = 0.5;
+const DEFAULT_MAX_DETECTIONS = 8;
 
 function resolveOrtRuntime(...candidates: unknown[]): OrtRuntimeApi {
   for (const candidate of candidates) {
@@ -70,31 +72,31 @@ async function loadRuntime() {
   if (!runtimePromise) {
     runtimePromise = withTimeout(
       (async () => {
-      const reactNativeOrt = await import("onnxruntime-react-native");
-      const ort = resolveOrtRuntime(reactNativeOrt);
-      const { detectorUri, embedderUri } = await getFaceModelUris();
-      const sessionOptions: Ort.InferenceSession.SessionOptions = {
-        graphOptimizationLevel: "basic",
-        intraOpNumThreads: 2,
-        interOpNumThreads: 1,
-      };
+        const reactNativeOrt = await import("onnxruntime-react-native");
+        const ort = resolveOrtRuntime(reactNativeOrt);
+        const { detectorUri, embedderUri } = await getFaceModelUris();
+        const sessionOptions: Ort.InferenceSession.SessionOptions = {
+          graphOptimizationLevel: "basic",
+          intraOpNumThreads: 4,
+          interOpNumThreads: 1,
+        };
 
-      const detectorSession = await withTimeout(
-        ort.InferenceSession.create(detectorUri, sessionOptions),
-        SESSION_LOAD_TIMEOUT_MS,
-        "Detector ONNX session load timed out",
-      );
-      const embedderSession = await withTimeout(
-        ort.InferenceSession.create(embedderUri, sessionOptions),
-        SESSION_LOAD_TIMEOUT_MS,
-        "Embedding ONNX session load timed out",
-      );
+        const detectorSession = await withTimeout(
+          ort.InferenceSession.create(detectorUri, sessionOptions),
+          SESSION_LOAD_TIMEOUT_MS,
+          "Detector ONNX session load timed out",
+        );
+        const embedderSession = await withTimeout(
+          ort.InferenceSession.create(embedderUri, sessionOptions),
+          SESSION_LOAD_TIMEOUT_MS,
+          "Embedding ONNX session load timed out",
+        );
 
-      return {
-        ort,
-        detectorSession,
-        embedderSession,
-      };
+        return {
+          ort,
+          detectorSession,
+          embedderSession,
+        };
       })(),
       RUNTIME_LOAD_TIMEOUT_MS,
       "On-device ONNX runtime load timed out",
@@ -116,7 +118,11 @@ function selectEnrollmentDetection(detections: Detection[]) {
   })[0];
 }
 
-async function detectFaces(runtime: LoadedRuntime, image: RgbImage) {
+async function detectFaces(
+  runtime: LoadedRuntime,
+  image: RgbImage,
+  options: { confidenceThreshold?: number; maxDetections?: number } = {},
+) {
   const tensorData = imageToNchwTensor(image, 320);
   const tensor = new runtime.ort.Tensor("float32", tensorData, [1, 3, 320, 320]);
   const outputs = await runtime.detectorSession.run({
@@ -124,9 +130,9 @@ async function detectFaces(runtime: LoadedRuntime, image: RgbImage) {
   });
 
   return decodeScrfdOutputs(outputs, {
-    confidenceThreshold: 0.5,
+    confidenceThreshold: options.confidenceThreshold ?? DEFAULT_DETECTION_CONFIDENCE,
     nmsThreshold: 0.4,
-    maxDetections: 8,
+    maxDetections: options.maxDetections ?? DEFAULT_MAX_DETECTIONS,
   });
 }
 
@@ -170,12 +176,51 @@ export class OnDeviceFaceEngine implements FaceEngine {
   async detect(request: DetectFaceRequest): Promise<DetectFaceResponse> {
     const runtime = await loadRuntime();
     const image = decodeJpegBase64(request.imageBase64);
-    const detections = await detectFaces(runtime, image);
+    const detections = await detectFaces(runtime, image, {
+      confidenceThreshold: request.confidenceThreshold,
+      maxDetections: request.maxDetections,
+    });
     const results = detections.map((detection) => detectionToResult(detection, image.width));
 
     return {
       success: true,
       detections: results,
+      count: results.length,
+    };
+  }
+
+  async recognizePrimary(request: RecognizeFaceRequest): Promise<RecognizeFaceResponse> {
+    const runtime = await loadRuntime();
+    const image = decodeJpegBase64(request.imageBase64);
+    const detections = await detectFaces(runtime, image, {
+      maxDetections: 1,
+    });
+
+    if (detections.length === 0) {
+      return {
+        success: true,
+        results: [],
+        count: 0,
+      };
+    }
+
+    const detection = selectEnrollmentDetection(detections);
+    const database = await getLocalFaceEmbeddingDatabase();
+    const embedding = await generateEmbedding(runtime, image, detection);
+    const match = findBestEmbeddingMatch(database, embedding, 0.45);
+    const detectionResult = detectionToResult(detection, image.width);
+    const results: FaceRecognitionResult[] = [
+      {
+        ...detectionResult,
+        person_id: match?.person_id ?? "unknown",
+        name: match?.name ?? "Unknown",
+        similarity: match?.similarity ?? 0,
+      },
+    ];
+
+    return {
+      success: true,
+      results,
       count: results.length,
     };
   }
@@ -215,7 +260,9 @@ export class OnDeviceFaceEngine implements FaceEngine {
   async recognize(request: RecognizeFaceRequest): Promise<RecognizeFaceResponse> {
     const runtime = await loadRuntime();
     const image = decodeJpegBase64(request.imageBase64);
-    const detections = await detectFaces(runtime, image);
+    const detections = await detectFaces(runtime, image, {
+      maxDetections: request.maxFaces,
+    });
     const database = await getLocalFaceEmbeddingDatabase();
     const results: FaceRecognitionResult[] = [];
 

@@ -1,21 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ScrollView, StyleSheet, Text, View, type DimensionValue } from "react-native";
 import { CameraView, type CameraCapturedPicture, type CameraType, useCameraPermissions } from "expo-camera";
-import { useLocalSearchParams } from "expo-router";
 
 import { ActionButton } from "@/components/ActionButton";
 import { withTimeout } from "@/services/async/withTimeout";
-import { DEFAULT_FACE_API_BASE_URL } from "@/services/config/faceBackend";
-import { BackendFaceEngine } from "@/services/face/backendFaceEngine";
 import { OnDeviceFaceEngine } from "@/services/face/onDeviceFaceEngine";
-import type { FaceRecognitionResult } from "@/services/face/types";
+import type { FaceDetectionResult, FaceRecognitionResult } from "@/services/face/types";
 import { prepareFaceImageAsync } from "@/services/image/prepareFaceImage";
 
 const FRAME_SIZE = 320;
-const LIVE_FRAME_DELAY_MS = 180;
-const OVERLAY_ANIMATION_MS = 420;
-const NO_FACE_GRACE_MS = 1400;
+const LIVE_FRAME_DELAY_MS = 60;
+const OVERLAY_ANIMATION_MS = 260;
+const NO_FACE_GRACE_MS = 1200;
 const STATUS_UPDATE_MS = 1200;
+const DETECTION_TIMEOUT_MS = 1200;
+const RECOGNITION_TIMEOUT_MS = 2800;
+const RECOGNITION_INTERVAL_MS = 2000;
+const MAX_LIVE_DETECTIONS = 3;
 
 function toPercent(value: number): DimensionValue {
   return `${Math.max(0, Math.min(100, (value / FRAME_SIZE) * 100))}%` as DimensionValue;
@@ -39,6 +40,52 @@ function resultKey(result: FaceRecognitionResult, index: number) {
   const centerY = Math.round((top + bottom) / 2 / 24) * 24;
 
   return `unknown-${centerX}-${centerY}-${index}`;
+}
+
+function bboxIoU(leftBox: FaceDetectionResult["bbox"], rightBox: FaceRecognitionResult["bbox"]) {
+  const top = Math.max(leftBox[0], rightBox[0]);
+  const right = Math.min(leftBox[1], rightBox[1]);
+  const bottom = Math.min(leftBox[2], rightBox[2]);
+  const left = Math.max(leftBox[3], rightBox[3]);
+  const intersectionWidth = Math.max(0, right - left);
+  const intersectionHeight = Math.max(0, bottom - top);
+  const intersection = intersectionWidth * intersectionHeight;
+  const leftArea = Math.max(0, leftBox[1] - leftBox[3]) * Math.max(0, leftBox[2] - leftBox[0]);
+  const rightArea = Math.max(0, rightBox[1] - rightBox[3]) * Math.max(0, rightBox[2] - rightBox[0]);
+  const union = leftArea + rightArea - intersection;
+
+  return union > 0 ? intersection / union : 0;
+}
+
+function attachCachedRecognitionLabels(
+  detections: FaceDetectionResult[],
+  cachedRecognitions: FaceRecognitionResult[],
+): FaceRecognitionResult[] {
+  return detections.map((detection) => {
+    const bestCachedRecognition = cachedRecognitions.reduce<{
+      recognition: FaceRecognitionResult;
+      overlap: number;
+    } | null>((best, recognition) => {
+      const overlap = bboxIoU(detection.bbox, recognition.bbox);
+
+      if (overlap < 0.18 || (best && best.overlap >= overlap)) {
+        return best;
+      }
+
+      return {
+        recognition,
+        overlap,
+      };
+    }, null);
+    const cached = bestCachedRecognition?.recognition;
+
+    return {
+      ...detection,
+      person_id: cached?.person_id ?? "unknown",
+      name: cached?.name ?? "Unknown",
+      similarity: cached?.similarity ?? 0,
+    };
+  });
 }
 
 function blendResult(from: FaceRecognitionResult, to: FaceRecognitionResult, progress: number): FaceRecognitionResult {
@@ -122,21 +169,35 @@ function RecognitionOverlay({ results }: { results: FaceRecognitionResult[] }) {
 }
 
 export default function DetectScreen() {
-  const params = useLocalSearchParams<{ apiBaseUrl?: string }>();
-  const apiBaseUrl = params.apiBaseUrl ?? DEFAULT_FACE_API_BASE_URL;
   const cameraRef = useRef<CameraView | null>(null);
-  const localEngineUnavailableReasonRef = useRef<string | null>(null);
+  const localEngineRef = useRef(new OnDeviceFaceEngine());
   const [permission, requestPermission] = useCameraPermissions();
   const [facing, setFacing] = useState<CameraType>("front");
   const [cameraReady, setCameraReady] = useState(false);
   const [isLive, setIsLive] = useState(true);
-  const [status, setStatus] = useState("Starting live face detection...");
-  const [liveMeta, setLiveMeta] = useState({ engine: "warming up", faces: 0 });
+  const [status, setStatus] = useState("Starting local live face detection...");
+  const [liveMeta, setLiveMeta] = useState({
+    engine: "Local detector",
+    faces: 0,
+    recognition: "warming up",
+  });
   const [results, setResults] = useState<FaceRecognitionResult[]>([]);
   const animationFrameRef = useRef<number | null>(null);
   const displayedResultsRef = useRef<FaceRecognitionResult[]>([]);
+  const latestRecognitionsRef = useRef<FaceRecognitionResult[]>([]);
+  const recognitionInFlightRef = useRef(false);
+  const lastRecognitionAtRef = useRef(0);
+  const recognitionStatusRef = useRef("warming up");
   const noFaceSinceRef = useRef<number | null>(null);
   const lastStatusAtRef = useRef(0);
+
+  const setRecognitionStatus = useCallback((recognition: string) => {
+    recognitionStatusRef.current = recognition;
+    setLiveMeta((current) => ({
+      ...current,
+      recognition,
+    }));
+  }, []);
 
   const animateOverlayTo = useCallback((targetResults: FaceRecognitionResult[]) => {
     if (animationFrameRef.current) {
@@ -168,43 +229,70 @@ export default function DetectScreen() {
   }, []);
 
   useEffect(() => {
+    if (!permission?.granted || !cameraReady) {
+      return;
+    }
+
+    let cancelled = false;
+
+    void withTimeout(localEngineRef.current.health(), 45000, "Local ONNX model loading timed out")
+      .then(() => {
+        if (!cancelled) {
+          setStatus("Local model ready. Live detection running...");
+          setRecognitionStatus("ready");
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setStatus(error instanceof Error ? error.message : "Local model failed to load");
+          setRecognitionStatus("unavailable");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [cameraReady, permission?.granted, setRecognitionStatus]);
+
+  useEffect(() => {
     let cancelled = false;
     let timeout: ReturnType<typeof setTimeout> | null = null;
 
-    async function recognizeWithFallback(imageBase64: string) {
-      if (!localEngineUnavailableReasonRef.current) {
-        try {
-          const response = await withTimeout(
-            new OnDeviceFaceEngine().recognize({ imageBase64 }),
-            8000,
-            "On-device recognition timed out",
-          );
-
-          return {
-            engine: "on-device" as const,
-            results: response.results,
-            fallbackReason: null,
-          };
-        } catch (localError) {
-          localEngineUnavailableReasonRef.current =
-            localError instanceof Error ? localError.message : "Local engine unavailable";
-        }
+    function maybeRefreshRecognition(imageBase64: string) {
+      if (recognitionInFlightRef.current || Date.now() - lastRecognitionAtRef.current < RECOGNITION_INTERVAL_MS) {
+        return;
       }
 
-      const response = await new BackendFaceEngine({ apiBaseUrl }).recognize({ imageBase64 });
-      const fallbackReason = `Local engine fallback: ${localEngineUnavailableReasonRef.current}`;
+      recognitionInFlightRef.current = true;
+      lastRecognitionAtRef.current = Date.now();
+      setRecognitionStatus("updating");
 
-      return {
-        engine: "backend" as const,
-        results: response.results.map((result) => ({
-          ...result,
-          engine: "backend" as const,
-          liveness_verified: true,
-          liveness_score: 1,
-          liveness_reason: fallbackReason,
-        })),
-        fallbackReason,
-      };
+      void withTimeout(
+        localEngineRef.current.recognizePrimary({ imageBase64 }),
+        RECOGNITION_TIMEOUT_MS,
+        "Local recognition timed out",
+      )
+        .then((response) => {
+          if (cancelled) {
+            return;
+          }
+
+          latestRecognitionsRef.current = response.results;
+          setRecognitionStatus(response.results.length > 0 ? "matched" : "no match");
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            setRecognitionStatus("delayed");
+
+            if (Date.now() - lastStatusAtRef.current > STATUS_UPDATE_MS) {
+              lastStatusAtRef.current = Date.now();
+              setStatus(error instanceof Error ? error.message : "Local recognition delayed");
+            }
+          }
+        })
+        .finally(() => {
+          recognitionInFlightRef.current = false;
+        });
     }
 
     async function processFrame() {
@@ -215,7 +303,7 @@ export default function DetectScreen() {
       try {
         const startTime = Date.now();
         const photo = (await cameraRef.current.takePictureAsync({
-          quality: 0.5,
+          quality: 0.35,
           shutterSound: false,
           skipProcessing: false,
         })) as CameraCapturedPicture | undefined;
@@ -224,15 +312,28 @@ export default function DetectScreen() {
           throw new Error("Camera did not return a picture");
         }
 
-        const prepared = await prepareFaceImageAsync(photo);
-        const recognition = await recognizeWithFallback(prepared.base64);
+        const prepared = await prepareFaceImageAsync(photo, {
+          compress: 0.35,
+          size: FRAME_SIZE,
+        });
+        const detection = await withTimeout(
+          localEngineRef.current.detect({
+            imageBase64: prepared.base64,
+            confidenceThreshold: 0.55,
+            maxDetections: MAX_LIVE_DETECTIONS,
+          }),
+          DETECTION_TIMEOUT_MS,
+          "Local detection timed out",
+        );
 
         if (!cancelled) {
-          const hasFaces = recognition.results.length > 0;
+          const displayResults = attachCachedRecognitionLabels(detection.detections, latestRecognitionsRef.current);
+          const hasFaces = displayResults.length > 0;
 
           if (hasFaces) {
             noFaceSinceRef.current = null;
-            animateOverlayTo(recognition.results);
+            animateOverlayTo(displayResults);
+            maybeRefreshRecognition(prepared.base64);
           } else {
             noFaceSinceRef.current ??= Date.now();
 
@@ -242,24 +343,23 @@ export default function DetectScreen() {
           }
 
           setLiveMeta({
-            engine: recognition.engine === "on-device" ? "On-device" : "Backend",
-            faces: recognition.results.length,
+            engine: "Local detector",
+            faces: displayResults.length,
+            recognition: recognitionStatusRef.current,
           });
 
           if (Date.now() - lastStatusAtRef.current > STATUS_UPDATE_MS) {
             lastStatusAtRef.current = Date.now();
             setStatus(
-              `${recognition.engine === "on-device" ? "On-device" : "Backend"} live overlay · ${
-                recognition.results.length
-              } face${recognition.results.length === 1 ? "" : "s"} · ${Date.now() - startTime}ms${
-                recognition.fallbackReason ? ` · ${recognition.fallbackReason}` : ""
-              }`,
+              `Local detect | ${displayResults.length} face${displayResults.length === 1 ? "" : "s"} | ${
+                Date.now() - startTime
+              }ms | recognition ${recognitionStatusRef.current}`,
             );
           }
         }
       } catch (error) {
         if (!cancelled) {
-          setStatus(error instanceof Error ? error.message : "Live face detection failed");
+          setStatus(error instanceof Error ? error.message : "Local live detection failed");
         }
       } finally {
         if (!cancelled) {
@@ -284,12 +384,16 @@ export default function DetectScreen() {
         animationFrameRef.current = null;
       }
     };
-  }, [animateOverlayTo, apiBaseUrl, cameraReady, isLive, permission?.granted]);
+  }, [animateOverlayTo, cameraReady, isLive, permission?.granted, setRecognitionStatus]);
 
   function switchCamera() {
     setCameraReady(false);
     displayedResultsRef.current = [];
+    latestRecognitionsRef.current = [];
+    recognitionInFlightRef.current = false;
+    lastRecognitionAtRef.current = 0;
     noFaceSinceRef.current = null;
+    setRecognitionStatus("warming up");
     setResults([]);
     setStatus("Switching camera...");
     setFacing((current) => (current === "front" ? "back" : "front"));
@@ -319,7 +423,7 @@ export default function DetectScreen() {
           facing={facing}
           onCameraReady={() => {
             setCameraReady(true);
-            setStatus(isLive ? "Camera ready. Live detection running..." : "Camera ready.");
+            setStatus(isLive ? "Camera ready. Loading local model..." : "Camera ready.");
           }}
           style={styles.camera}
         />
@@ -342,11 +446,12 @@ export default function DetectScreen() {
 
       <View style={styles.liveHintCard}>
         <Text style={styles.sectionTitle}>
-          {liveMeta.engine} · {liveMeta.faces} face{liveMeta.faces === 1 ? "" : "s"}
+          {liveMeta.engine} | {liveMeta.faces} face{liveMeta.faces === 1 ? "" : "s"} | recognition{" "}
+          {liveMeta.recognition}
         </Text>
         <Text style={styles.muted}>
-          The camera stays live while the overlay glides between detection frames. Green boxes are known faces; amber
-          boxes are unknown faces.
+          Live frames stay local on the phone. Detection runs frequently; heavier identity recognition runs separately
+          and reuses the latest secure local match.
         </Text>
       </View>
     </ScrollView>

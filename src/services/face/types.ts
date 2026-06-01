@@ -22,6 +22,8 @@ export type FaceRecognitionResult = FaceDetectionResult & {
 
 export type DetectFaceRequest = {
   imageBase64: string;
+  confidenceThreshold?: number;
+  maxDetections?: number;
 };
 
 export type DetectFaceResponse = {
@@ -33,6 +35,7 @@ export type DetectFaceResponse = {
 
 export type RecognizeFaceRequest = {
   imageBase64: string;
+  maxFaces?: number;
 };
 
 export type RecognizeFaceResponse = {

@@ -8,7 +8,16 @@ export type PreparedFaceImage = {
   height: number;
 };
 
-export async function prepareFaceImageAsync(photo: CameraCapturedPicture): Promise<PreparedFaceImage> {
+export type PrepareFaceImageOptions = {
+  compress?: number;
+  size?: number;
+};
+
+export async function prepareFaceImageAsync(
+  photo: CameraCapturedPicture,
+  options: PrepareFaceImageOptions = {},
+): Promise<PreparedFaceImage> {
+  const size = options.size ?? 320;
   const width = photo.width || 320;
   const height = photo.height || 320;
   const cropSize = Math.min(width, height);
@@ -28,14 +37,14 @@ export async function prepareFaceImageAsync(photo: CameraCapturedPicture): Promi
       },
       {
         resize: {
-          width: 320,
-          height: 320,
+          width: size,
+          height: size,
         },
       },
     ],
     {
       base64: true,
-      compress: 0.6,
+      compress: options.compress ?? 0.6,
       format: SaveFormat.JPEG,
     },
   );
