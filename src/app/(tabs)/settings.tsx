@@ -201,7 +201,6 @@ export default function SettingsScreen() {
             style={styles.input}
             value={apiBaseUrl}
           />
-          <Text style={styles.hint}>{getDeviceBackendHint()}</Text>
           <View style={styles.actionGrid}>
             <ActionButton disabled={isBusy} onPress={checkHealth} title="Check Backend" />
             <ActionButton disabled={isBusy} onPress={() => saveBackendUrl()} title="Save Backend" variant="secondary" />

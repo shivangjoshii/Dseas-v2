@@ -63,7 +63,12 @@ export default function Index() {
   const appBarHeight = scrollY.interpolate({
     extrapolate: "clamp",
     inputRange: [0, 64],
-    outputRange: [56, insets.top + 60],
+    outputRange: [56, insets.top + 52],
+  });
+  const appBarPaddingTop = scrollY.interpolate({
+    extrapolate: "clamp",
+    inputRange: [0, 64],
+    outputRange: [0, insets.top],
   });
 
   const animatePoster = useCallback(
@@ -181,6 +186,7 @@ export default function Index() {
             borderRadius: appBarRadius,
             height: appBarHeight,
             marginHorizontal: appBarMargin,
+            paddingTop: appBarPaddingTop,
             top: appBarTop,
           },
         ]}

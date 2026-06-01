@@ -1,7 +1,7 @@
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { ActivityIndicator, Image, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from "react-native";
 import { CameraView, type CameraCapturedPicture, type CameraType, useCameraPermissions } from "expo-camera";
-import { useLocalSearchParams } from "expo-router";
+import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ActionButton } from "@/components/ActionButton";
@@ -13,22 +13,44 @@ import { OnDeviceFaceEngine } from "@/services/face/onDeviceFaceEngine";
 import { prepareFaceImageAsync, type PreparedFaceImage } from "@/services/image/prepareFaceImage";
 import { saveLocalFaceMetadata } from "@/services/storage/database";
 
+const INITIAL_ENROLL_STATUS = "Enter a name, capture a clear face, and enroll.";
+
 export default function EnrollScreen() {
   const params = useLocalSearchParams<{ apiBaseUrl?: string }>();
   const apiBaseUrl = params.apiBaseUrl ?? DEFAULT_FACE_API_BASE_URL;
   const cameraRef = useRef<CameraView | null>(null);
+  const completedEnrollmentRef = useRef(false);
   const [permission, requestPermission] = useCameraPermissions();
   const [facing, setFacing] = useState<CameraType>("front");
   const [name, setName] = useState("");
   const [personId, setPersonId] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
-  const [status, setStatus] = useState("Enter a name, capture a clear face, and enroll.");
+  const [status, setStatus] = useState(INITIAL_ENROLL_STATUS);
   const [preparedImage, setPreparedImage] = useState<PreparedFaceImage | null>(null);
   const [snackbar, setSnackbar] = useState<SnackbarState>({ message: "", visible: false });
 
   function showSnackbar(message: string, tone: SnackbarState["tone"] = "info") {
     setSnackbar({ message, tone, visible: true });
   }
+
+  const resetCompletedEnrollment = useCallback(() => {
+    setName("");
+    setPersonId("");
+    setPreparedImage(null);
+    setStatus(INITIAL_ENROLL_STATUS);
+    setSnackbar({ message: "", visible: false });
+    completedEnrollmentRef.current = false;
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        if (completedEnrollmentRef.current) {
+          resetCompletedEnrollment();
+        }
+      };
+    }, [resetCompletedEnrollment]),
+  );
 
   async function captureAndEnroll() {
     if (!cameraRef.current || isProcessing) {
@@ -42,6 +64,7 @@ export default function EnrollScreen() {
     }
 
     setIsProcessing(true);
+    completedEnrollmentRef.current = false;
     setStatus("Capturing enrollment frame...");
 
     try {
@@ -80,6 +103,7 @@ export default function EnrollScreen() {
         }
 
         const enrolledPersonId = localResponse.person_id ?? (personId.trim() || name.trim());
+        completedEnrollmentRef.current = true;
         setStatus(`Enrolled ${name.trim()} locally as ${enrolledPersonId}. Attendance will sync from local queue.`);
         showSnackbar(`Face enrolled locally: ${name.trim()}`, "success");
         return;
@@ -100,6 +124,7 @@ export default function EnrollScreen() {
         null,
         { synced: true },
       );
+      completedEnrollmentRef.current = true;
       setStatus(
         localUnavailableError instanceof Error
           ? `Backend fallback enrolled ${name.trim()}. Local embedding unavailable: ${localUnavailableError.message}`
