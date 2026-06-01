@@ -16,6 +16,7 @@ export default function RootLayout() {
         <Stack.Screen name="recognize" options={{ title: "Recognize & Mark" }} />
         <Stack.Screen name="detect" options={{ title: "Detect Faces" }} />
         <Stack.Screen name="logs" options={{ title: "Attendance Logs" }} />
+        <Stack.Screen name="notifications" options={{ title: "Notifications" }} />
       </Stack>
     </SafeAreaProvider>
   );

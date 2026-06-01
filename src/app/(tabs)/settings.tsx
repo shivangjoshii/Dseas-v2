@@ -8,7 +8,7 @@ import { ActionButton } from "@/components/ActionButton";
 import { AppIcon } from "@/components/AppIcon";
 import { FloatingSnackbar, type SnackbarState } from "@/components/FloatingSnackbar";
 import { withTimeout } from "@/services/async/withTimeout";
-import { DEFAULT_FACE_API_BASE_URL, getDeviceBackendHint, normalizeApiBaseUrl } from "@/services/config/faceBackend";
+import { DEFAULT_FACE_API_BASE_URL, normalizeApiBaseUrl } from "@/services/config/faceBackend";
 import { BackendFaceEngine } from "@/services/face/backendFaceEngine";
 import { OnDeviceFaceEngine } from "@/services/face/onDeviceFaceEngine";
 import { getEngineSetting, getFaceDatabase, getUnsyncedAttendanceRecords, setEngineSetting } from "@/services/storage/database";
@@ -202,8 +202,8 @@ export default function SettingsScreen() {
             value={apiBaseUrl}
           />
           <View style={styles.actionGrid}>
-            <ActionButton disabled={isBusy} onPress={checkHealth} title="Check Backend" />
-            <ActionButton disabled={isBusy} onPress={() => saveBackendUrl()} title="Save Backend" variant="secondary" />
+            <ActionButton disabled={isBusy} onPress={checkHealth} title="Check Server" />
+            <ActionButton disabled={isBusy} onPress={() => saveBackendUrl()} title="Save API URL" variant="secondary" />
           </View>
         </View>
 
@@ -226,7 +226,7 @@ export default function SettingsScreen() {
             title="Engine Status"
           />
           <FeatureTile
-            android="face"
+            android="face" 
             disabled={isBusy}
             ios="faceid"
             onPress={() => openRoute("/detect")}

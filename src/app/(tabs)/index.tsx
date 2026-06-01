@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Animated, Dimensions, Easing, PanResponder, Pressable, StatusBar, StyleSheet, Text, View } from "react-native";
+import { Animated, Dimensions, Easing, PanResponder, Pressable, StatusBar, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -195,7 +195,7 @@ export default function Index() {
         <Text style={styles.appBarTitle}>DSEAS</Text>
         <Pressable
           accessibilityRole="button"
-          onPress={() => Alert.alert("Notifications", "No new DSEAS alerts right now.")}
+          onPress={() => router.push("/notifications")}
           style={styles.notificationButton}
         >
           <AppIcon android="notifications_active" color="#1677FF" fallback="N" ios="bell.fill" size={22} />
