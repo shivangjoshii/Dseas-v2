@@ -4,6 +4,7 @@ import { CameraView, type CameraCapturedPicture, type CameraType, useCameraPermi
 import { useLocalSearchParams } from "expo-router";
 
 import { ActionButton } from "@/components/ActionButton";
+import { withTimeout } from "@/services/async/withTimeout";
 import { DEFAULT_FACE_API_BASE_URL } from "@/services/config/faceBackend";
 import { BackendFaceEngine } from "@/services/face/backendFaceEngine";
 import { OnDeviceFaceEngine } from "@/services/face/onDeviceFaceEngine";
@@ -48,7 +49,11 @@ export default function RecognizeScreen() {
       let response;
 
       try {
-        response = await new OnDeviceFaceEngine().recognize({ imageBase64: prepared.base64 });
+        response = await withTimeout(
+          new OnDeviceFaceEngine().recognize({ imageBase64: prepared.base64 }),
+          10000,
+          "On-device recognition timed out",
+        );
       } catch (localError) {
         setStatus("On-device engine unavailable in this build. Trying backend fallback...");
         response = await new BackendFaceEngine({ apiBaseUrl }).recognize({ imageBase64: prepared.base64 });

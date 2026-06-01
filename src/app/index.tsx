@@ -3,6 +3,7 @@ import { Alert, ScrollView, StyleSheet, Text, TextInput, View } from "react-nati
 import { router } from "expo-router";
 
 import { ActionButton } from "@/components/ActionButton";
+import { withTimeout } from "@/services/async/withTimeout";
 import { BackendFaceEngine } from "@/services/face/backendFaceEngine";
 import { OnDeviceFaceEngine } from "@/services/face/onDeviceFaceEngine";
 import { DEFAULT_FACE_API_BASE_URL, getDeviceBackendHint, normalizeApiBaseUrl } from "@/services/config/faceBackend";
@@ -87,7 +88,11 @@ export default function Index() {
     setStatus("Loading bundled ONNX models...");
 
     try {
-      const health = await new OnDeviceFaceEngine().health();
+      const health = await withTimeout(
+        new OnDeviceFaceEngine().health(),
+        25000,
+        "On-device ONNX model loading timed out",
+      );
       setStatus(`On-device engine ready: ${health.version}`);
     } catch (error) {
       setStatus(
@@ -100,7 +105,7 @@ export default function Index() {
     }
   }
 
-  async function openRoute(pathname: "/recognize" | "/enroll" | "/logs") {
+  async function openRoute(pathname: "/detect" | "/recognize" | "/enroll" | "/logs") {
     await saveBackendUrl();
     router.push({ pathname, params: { apiBaseUrl: normalizeApiBaseUrl(apiBaseUrl) } } as never);
   }
@@ -135,6 +140,7 @@ export default function Index() {
       </View>
 
       <View style={styles.grid}>
+        <ActionButton disabled={isBusy} onPress={() => openRoute("/detect")} title="Detect Faces" variant="secondary" />
         <ActionButton disabled={isBusy} onPress={() => openRoute("/recognize")} title="Recognize & Mark" />
         <ActionButton disabled={isBusy} onPress={() => openRoute("/enroll")} title="Enroll Face" variant="secondary" />
         <ActionButton disabled={isBusy} onPress={() => openRoute("/logs")} title="View Logs" variant="secondary" />

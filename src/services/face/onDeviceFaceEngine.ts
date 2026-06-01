@@ -1,5 +1,6 @@
 import type * as Ort from "onnxruntime-react-native";
 
+import { withTimeout } from "@/services/async/withTimeout";
 import { buildFaceEmbeddingTensor } from "@/services/face/faceAlignment";
 import { findBestEmbeddingMatch, l2Normalize } from "@/services/face/faceMath";
 import { runPassiveLivenessQualityCheck } from "@/services/face/liveness";
@@ -8,9 +9,12 @@ import { decodeScrfdOutputs, type Detection } from "@/services/face/scrfdDetecto
 import type {
   AttendanceLogRequest,
   BackendAttendanceLog,
+  DetectFaceRequest,
+  DetectFaceResponse,
   EnrollFaceRequest,
   EnrollFaceResponse,
   FaceEngine,
+  FaceDetectionResult,
   FaceRecognitionResult,
   HealthResponse,
   RecognizeFaceRequest,
@@ -25,38 +29,79 @@ import {
 
 type OrtModule = typeof Ort;
 type OrtSession = Ort.InferenceSession;
+type OrtRuntimeApi = Pick<OrtModule, "InferenceSession" | "Tensor">;
 
 type LoadedRuntime = {
-  ort: OrtModule;
+  ort: OrtRuntimeApi;
   detectorSession: OrtSession;
   embedderSession: OrtSession;
 };
 
 let runtimePromise: Promise<LoadedRuntime> | null = null;
+const SESSION_LOAD_TIMEOUT_MS = 20000;
+const RUNTIME_LOAD_TIMEOUT_MS = 45000;
+
+function resolveOrtRuntime(...candidates: unknown[]): OrtRuntimeApi {
+  for (const candidate of candidates) {
+    const moduleCandidate = candidate as
+      | (Partial<OrtRuntimeApi> & {
+          default?: Partial<OrtRuntimeApi>;
+        })
+      | null
+      | undefined;
+    const runtime = moduleCandidate?.InferenceSession?.create
+      ? moduleCandidate
+      : moduleCandidate?.default?.InferenceSession?.create
+        ? moduleCandidate.default
+        : null;
+
+    if (runtime?.InferenceSession?.create && runtime.Tensor) {
+      return {
+        InferenceSession: runtime.InferenceSession,
+        Tensor: runtime.Tensor,
+      };
+    }
+  }
+
+  throw new Error("ONNX Runtime API unavailable. Rebuild the native dev app after installing onnxruntime-react-native.");
+}
 
 async function loadRuntime() {
   if (!runtimePromise) {
-    runtimePromise = (async () => {
-      const ort = await import("onnxruntime-react-native");
+    runtimePromise = withTimeout(
+      (async () => {
+      const reactNativeOrt = await import("onnxruntime-react-native");
+      const ort = resolveOrtRuntime(reactNativeOrt);
       const { detectorUri, embedderUri } = await getFaceModelUris();
       const sessionOptions: Ort.InferenceSession.SessionOptions = {
-        executionProviders: ["cpu"],
-        graphOptimizationLevel: "all",
+        graphOptimizationLevel: "basic",
         intraOpNumThreads: 2,
         interOpNumThreads: 1,
       };
 
-      const [detectorSession, embedderSession] = await Promise.all([
+      const detectorSession = await withTimeout(
         ort.InferenceSession.create(detectorUri, sessionOptions),
+        SESSION_LOAD_TIMEOUT_MS,
+        "Detector ONNX session load timed out",
+      );
+      const embedderSession = await withTimeout(
         ort.InferenceSession.create(embedderUri, sessionOptions),
-      ]);
+        SESSION_LOAD_TIMEOUT_MS,
+        "Embedding ONNX session load timed out",
+      );
 
       return {
         ort,
         detectorSession,
         embedderSession,
       };
-    })();
+      })(),
+      RUNTIME_LOAD_TIMEOUT_MS,
+      "On-device ONNX runtime load timed out",
+    ).catch((error) => {
+      runtimePromise = null;
+      throw error;
+    });
   }
 
   return runtimePromise;
@@ -98,6 +143,20 @@ async function generateEmbedding(runtime: LoadedRuntime, image: RgbImage, detect
   return l2Normalize(rawEmbedding);
 }
 
+function detectionToResult(detection: Detection, imageWidth: number): FaceDetectionResult {
+  const quality = runPassiveLivenessQualityCheck(detection.bbox, detection.landmarks, detection.score, imageWidth);
+
+  return {
+    bbox: detection.bbox,
+    score: detection.score,
+    landmarks: detection.landmarks,
+    engine: "on-device",
+    liveness_verified: quality.verified,
+    liveness_score: quality.score,
+    liveness_reason: quality.reason,
+  };
+}
+
 export class OnDeviceFaceEngine implements FaceEngine {
   async health(): Promise<HealthResponse> {
     await loadRuntime();
@@ -105,6 +164,19 @@ export class OnDeviceFaceEngine implements FaceEngine {
     return {
       status: "ok",
       version: "on-device-onnx-scrfd-edgeface",
+    };
+  }
+
+  async detect(request: DetectFaceRequest): Promise<DetectFaceResponse> {
+    const runtime = await loadRuntime();
+    const image = decodeJpegBase64(request.imageBase64);
+    const detections = await detectFaces(runtime, image);
+    const results = detections.map((detection) => detectionToResult(detection, image.width));
+
+    return {
+      success: true,
+      detections: results,
+      count: results.length,
     };
   }
 
@@ -150,19 +222,13 @@ export class OnDeviceFaceEngine implements FaceEngine {
     for (const detection of detections) {
       const embedding = await generateEmbedding(runtime, image, detection);
       const match = findBestEmbeddingMatch(database, embedding, 0.45);
-      const quality = runPassiveLivenessQualityCheck(detection.bbox, detection.landmarks, detection.score, image.width);
+      const detectionResult = detectionToResult(detection, image.width);
 
       results.push({
+        ...detectionResult,
         person_id: match?.person_id ?? "unknown",
         name: match?.name ?? "Unknown",
         similarity: match?.similarity ?? 0,
-        bbox: detection.bbox,
-        score: detection.score,
-        landmarks: detection.landmarks,
-        engine: "on-device",
-        liveness_verified: quality.verified,
-        liveness_score: quality.score,
-        liveness_reason: quality.reason,
       });
     }
 

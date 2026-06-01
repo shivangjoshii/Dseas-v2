@@ -4,10 +4,7 @@ export type FaceLandmark = [x: number, y: number];
 
 export type RecognitionPersonId = string;
 
-export type FaceRecognitionResult = {
-  person_id: RecognitionPersonId;
-  name: string;
-  similarity: number;
+export type FaceDetectionResult = {
   bbox: FaceBoundingBox;
   score: number;
   landmarks: FaceLandmark[];
@@ -15,6 +12,23 @@ export type FaceRecognitionResult = {
   liveness_verified?: boolean;
   liveness_score?: number;
   liveness_reason?: string;
+};
+
+export type FaceRecognitionResult = FaceDetectionResult & {
+  person_id: RecognitionPersonId;
+  name: string;
+  similarity: number;
+};
+
+export type DetectFaceRequest = {
+  imageBase64: string;
+};
+
+export type DetectFaceResponse = {
+  success: boolean;
+  detections: FaceDetectionResult[];
+  count: number;
+  error?: string;
 };
 
 export type RecognizeFaceRequest = {

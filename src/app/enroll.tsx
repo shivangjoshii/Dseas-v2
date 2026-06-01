@@ -4,6 +4,7 @@ import { CameraView, type CameraCapturedPicture, type CameraType, useCameraPermi
 import { useLocalSearchParams } from "expo-router";
 
 import { ActionButton } from "@/components/ActionButton";
+import { withTimeout } from "@/services/async/withTimeout";
 import { DEFAULT_FACE_API_BASE_URL } from "@/services/config/faceBackend";
 import { BackendFaceEngine } from "@/services/face/backendFaceEngine";
 import { OnDeviceFaceEngine } from "@/services/face/onDeviceFaceEngine";
@@ -58,7 +59,11 @@ export default function EnrollScreen() {
       let enrolledLocally = false;
 
       try {
-        response = await new OnDeviceFaceEngine().enroll(enrollmentPayload);
+        response = await withTimeout(
+          new OnDeviceFaceEngine().enroll(enrollmentPayload),
+          12000,
+          "On-device enrollment timed out",
+        );
 
         if (!response.success) {
           throw new Error(response.error || "Local enrollment failed");
