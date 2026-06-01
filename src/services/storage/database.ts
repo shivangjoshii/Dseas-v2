@@ -214,15 +214,16 @@ export async function getUnsyncedAttendanceRecords(limit = 50) {
   );
 }
 
-export async function markAttendanceSynced(id: string, cloudId?: string | null) {
+export async function deleteAttendanceRecord(id: string) {
   const database = await getFaceDatabase();
 
-  await database.runAsync(
-    "UPDATE attendance_queue SET synced = 1, last_sync_at = ?, cloud_id = COALESCE(?, cloud_id) WHERE id = ?",
-    new Date().toISOString(),
-    cloudId ?? null,
-    id,
-  );
+  await database.runAsync("DELETE FROM attendance_queue WHERE id = ?", id);
+}
+
+export async function clearSyncedAttendanceRecords() {
+  const database = await getFaceDatabase();
+
+  await database.runAsync("DELETE FROM attendance_queue WHERE synced = 1");
 }
 
 export async function incrementAttendanceSyncAttempt(id: string) {

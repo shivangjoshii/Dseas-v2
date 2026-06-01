@@ -36,7 +36,7 @@ export default function LogsScreen() {
       const summary = await syncAttendanceQueue(apiBaseUrl);
       setStatus(
         summary.online
-          ? `Sync complete: ${summary.synced}/${summary.attempted} synced, ${summary.failed} failed.`
+          ? `Sync complete: ${summary.synced}/${summary.attempted} uploaded and cleared, ${summary.failed} failed.`
           : "Offline. Records remain queued locally.",
       );
       await refreshLogs();

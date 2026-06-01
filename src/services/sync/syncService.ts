@@ -2,9 +2,10 @@ import * as Network from "expo-network";
 
 import { BackendFaceEngine } from "@/services/face/backendFaceEngine";
 import {
+  clearSyncedAttendanceRecords,
+  deleteAttendanceRecord,
   getUnsyncedAttendanceRecords,
   incrementAttendanceSyncAttempt,
-  markAttendanceSynced,
 } from "@/services/storage/database";
 
 export type SyncSummary = {
@@ -32,6 +33,8 @@ export async function syncAttendanceQueue(apiBaseUrl: string): Promise<SyncSumma
     };
   }
 
+  await clearSyncedAttendanceRecords();
+
   const records = await getUnsyncedAttendanceRecords();
   const engine = new BackendFaceEngine({ apiBaseUrl });
   let synced = 0;
@@ -46,7 +49,7 @@ export async function syncAttendanceQueue(apiBaseUrl: string): Promise<SyncSumma
         liveness_verified: Boolean(record.liveness_verified),
         location: record.location,
       });
-      await markAttendanceSynced(record.id, `backend:${record.id}`);
+      await deleteAttendanceRecord(record.id);
       synced += 1;
     } catch {
       await incrementAttendanceSyncAttempt(record.id);

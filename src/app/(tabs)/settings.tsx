@@ -108,8 +108,8 @@ export default function SettingsScreen() {
         setStatus("No internet/backend path available. Queue kept locally.");
         showSnackbar("No internet. Queue kept locally.", "info");
       } else {
-        setStatus(`Sync complete: ${summary.synced}/${summary.attempted} synced, ${summary.failed} failed`);
-        showSnackbar(`Sync complete: ${summary.synced}/${summary.attempted}`, summary.failed ? "info" : "success");
+        setStatus(`Sync complete: ${summary.synced}/${summary.attempted} uploaded and cleared, ${summary.failed} failed`);
+        showSnackbar(`Uploaded and cleared: ${summary.synced}/${summary.attempted}`, summary.failed ? "info" : "success");
       }
 
       const pendingRecords = await getUnsyncedAttendanceRecords(50);
