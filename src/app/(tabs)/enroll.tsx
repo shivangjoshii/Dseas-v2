@@ -5,6 +5,7 @@ import { useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ActionButton } from "@/components/ActionButton";
+import { FloatingSnackbar, type SnackbarState } from "@/components/FloatingSnackbar";
 import { withTimeout } from "@/services/async/withTimeout";
 import { DEFAULT_FACE_API_BASE_URL } from "@/services/config/faceBackend";
 import { BackendFaceEngine } from "@/services/face/backendFaceEngine";
@@ -23,6 +24,11 @@ export default function EnrollScreen() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [status, setStatus] = useState("Enter a name, capture a clear face, and enroll.");
   const [preparedImage, setPreparedImage] = useState<PreparedFaceImage | null>(null);
+  const [snackbar, setSnackbar] = useState<SnackbarState>({ message: "", visible: false });
+
+  function showSnackbar(message: string, tone: SnackbarState["tone"] = "info") {
+    setSnackbar({ message, tone, visible: true });
+  }
 
   async function captureAndEnroll() {
     if (!cameraRef.current || isProcessing) {
@@ -31,6 +37,7 @@ export default function EnrollScreen() {
 
     if (!name.trim()) {
       setStatus("Name is required for enrollment.");
+      showSnackbar("Name is required for enrollment.", "error");
       return;
     }
 
@@ -85,6 +92,7 @@ export default function EnrollScreen() {
             ? `Backend enrollment succeeded. Local embedding unavailable: ${localError.message}`
             : "Backend enrollment succeeded. Local embedding unavailable in this build.",
         );
+        showSnackbar("Face enrolled using backend fallback.", "success");
         return;
       }
 
@@ -94,15 +102,18 @@ export default function EnrollScreen() {
       try {
         await new BackendFaceEngine({ apiBaseUrl }).enroll(enrollmentPayload);
         setStatus(`Enrolled ${name.trim()} locally and mirrored to backend.`);
+        showSnackbar(`Face enrolled: ${name.trim()}`, "success");
       } catch {
         setStatus(
           enrolledLocally
             ? `Enrolled ${name.trim()} locally. Backend mirror skipped/offline; sync can happen later.`
             : `Enrolled ${name.trim()} as ${enrolledPersonId}.`,
         );
+        showSnackbar(`Face enrolled locally: ${name.trim()}`, "success");
       }
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Enrollment failed");
+      showSnackbar(error instanceof Error ? error.message : "Enrollment failed", "error");
     } finally {
       setIsProcessing(false);
     }
@@ -171,6 +182,12 @@ export default function EnrollScreen() {
         </View>
       ) : null}
       </ScrollView>
+      <FloatingSnackbar
+        message={snackbar.message}
+        onDismiss={() => setSnackbar((current) => ({ ...current, visible: false }))}
+        tone={snackbar.tone}
+        visible={snackbar.visible}
+      />
     </View>
   );
 }

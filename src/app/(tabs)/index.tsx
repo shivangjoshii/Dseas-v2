@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Animated, PanResponder, Pressable, StatusBar, StyleSheet, Text, View } from "react-native";
+import { Alert, Animated, Dimensions, Easing, PanResponder, Pressable, StatusBar, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -10,6 +10,9 @@ import { isNetworkUsable } from "@/services/sync/syncService";
 
 const BACKEND_URL_SETTING = "face_api_base_url";
 const POSTER_INTERVAL_MS = 3600;
+const POSTER_GAP = 14;
+const POSTER_WIDTH = Dimensions.get("window").width - 36;
+const POSTER_SLIDE_DISTANCE = POSTER_WIDTH + POSTER_GAP;
 
 const posters = [
   {
@@ -39,51 +42,55 @@ export default function Index() {
   const [syncStatus, setSyncStatus] = useState("Offline queue enabled");
   const [scrollY] = useState(() => new Animated.Value(0));
   const [posterTranslateX] = useState(() => new Animated.Value(0));
-  const [posterOpacity] = useState(() => new Animated.Value(1));
+  const [posterDirection, setPosterDirection] = useState<1 | -1>(1);
+  const [posterAnimating, setPosterAnimating] = useState(false);
 
   const appBarMargin = scrollY.interpolate({
     extrapolate: "clamp",
-    inputRange: [0, 72],
+    inputRange: [0, 64],
     outputRange: [18, 0],
   });
   const appBarRadius = scrollY.interpolate({
     extrapolate: "clamp",
-    inputRange: [0, 72],
+    inputRange: [0, 64],
     outputRange: [24, 0],
   });
   const appBarTop = scrollY.interpolate({
     extrapolate: "clamp",
-    inputRange: [0, 72],
-    outputRange: [insets.top + 18, insets.top],
+    inputRange: [0, 64],
+    outputRange: [insets.top + 10, 0],
   });
   const appBarHeight = scrollY.interpolate({
     extrapolate: "clamp",
-    inputRange: [0, 72],
-    outputRange: [56, 64],
+    inputRange: [0, 64],
+    outputRange: [56, insets.top + 60],
   });
 
   const animatePoster = useCallback(
     (direction: 1 | -1) => {
-      posterTranslateX.setValue(direction * 22);
-      posterOpacity.setValue(0.72);
-      setPosterIndex((current) => (current + direction + posters.length) % posters.length);
+      if (posterAnimating) {
+        return;
+      }
 
-      Animated.parallel([
-        Animated.spring(posterTranslateX, {
-          damping: 24,
-          mass: 0.8,
-          stiffness: 95,
-          toValue: 0,
-          useNativeDriver: true,
-        }),
-        Animated.timing(posterOpacity, {
-          duration: 320,
-          toValue: 1,
-          useNativeDriver: true,
-        }),
-      ]).start();
+      setPosterAnimating(true);
+      setPosterDirection(direction);
+      posterTranslateX.setValue(direction === 1 ? 0 : -POSTER_SLIDE_DISTANCE);
+
+      Animated.timing(posterTranslateX, {
+        duration: 460,
+        easing: Easing.out(Easing.cubic),
+        toValue: direction === 1 ? -POSTER_SLIDE_DISTANCE : 0,
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) {
+          setPosterIndex((current) => (current + direction + posters.length) % posters.length);
+        }
+
+        posterTranslateX.setValue(0);
+        setPosterAnimating(false);
+      });
     },
-    [posterOpacity, posterTranslateX],
+    [posterAnimating, posterTranslateX],
   );
 
   const posterPanResponder = useMemo(
@@ -161,6 +168,8 @@ export default function Index() {
   }
 
   const poster = posters[posterIndex];
+  const nextPoster = posters[(posterIndex + posterDirection + posters.length) % posters.length];
+  const carouselPosters = posterDirection === 1 ? [poster, nextPoster] : [nextPoster, poster];
 
   return (
     <View style={styles.screen}>
@@ -203,40 +212,13 @@ export default function Index() {
           </View>
         </View>
 
-        <Animated.View
-          {...posterPanResponder.panHandlers}
-          style={[
-            styles.poster,
-            {
-              backgroundColor: poster.background,
-              opacity: posterOpacity,
-              transform: [{ translateX: posterTranslateX }],
-            },
-          ]}
-        >
-          <View style={[styles.posterGlow, { backgroundColor: poster.accent }]} />
-          <View style={[styles.posterOrb, { borderColor: poster.accent }]} />
-          <View style={styles.posterTopRow}>
-            <Text style={[styles.posterBadge, { color: poster.accent }]}>{poster.badge}</Text>
-            <Text style={styles.posterMetric}>{poster.metric}</Text>
-          </View>
-          <Text numberOfLines={2} style={styles.posterTitle}>
-            {poster.title}
-          </Text>
-          <Text numberOfLines={2} style={styles.posterDescription}>
-            {poster.description}
-          </Text>
-          <View style={styles.posterFooter}>
-            <View style={styles.posterMiniCard}>
-              <Text style={styles.posterMiniValue}>320</Text>
-              <Text style={styles.posterMiniLabel}>Face frame</Text>
-            </View>
-            <View style={styles.posterMiniCard}>
-              <Text style={styles.posterMiniValue}>ONNX</Text>
-              <Text style={styles.posterMiniLabel}>Local engine</Text>
-            </View>
-          </View>
-        </Animated.View>
+        <View style={styles.posterViewport} {...posterPanResponder.panHandlers}>
+          <Animated.View style={[styles.posterTrack, { transform: [{ translateX: posterTranslateX }] }]}>
+            {carouselPosters.map((carouselPoster) => (
+              <PosterCard key={carouselPoster.title} poster={carouselPoster} />
+            ))}
+          </Animated.View>
+        </View>
 
         <View style={styles.posterDots}>
           {posters.map((item, index) => (
@@ -285,6 +267,35 @@ function StatusRow({ label, value, tone }: { label: string; value: string; tone:
         <Text numberOfLines={1} style={styles.statusValue}>
           {value}
         </Text>
+      </View>
+    </View>
+  );
+}
+
+function PosterCard({ poster }: { poster: (typeof posters)[number] }) {
+  return (
+    <View style={[styles.poster, { backgroundColor: poster.background }]}>
+      <View style={[styles.posterGlow, { backgroundColor: poster.accent }]} />
+      <View style={[styles.posterOrb, { borderColor: poster.accent }]} />
+      <View style={styles.posterTopRow}>
+        <Text style={[styles.posterBadge, { color: poster.accent }]}>{poster.badge}</Text>
+        <Text style={styles.posterMetric}>{poster.metric}</Text>
+      </View>
+      <Text numberOfLines={2} style={styles.posterTitle}>
+        {poster.title}
+      </Text>
+      <Text numberOfLines={2} style={styles.posterDescription}>
+        {poster.description}
+      </Text>
+      <View style={styles.posterFooter}>
+        <View style={styles.posterMiniCard}>
+          <Text style={styles.posterMiniValue}>320</Text>
+          <Text style={styles.posterMiniLabel}>Face frame</Text>
+        </View>
+        <View style={styles.posterMiniCard}>
+          <Text style={styles.posterMiniValue}>ONNX</Text>
+          <Text style={styles.posterMiniLabel}>Local engine</Text>
+        </View>
       </View>
     </View>
   );
@@ -371,6 +382,7 @@ const styles = StyleSheet.create({
     shadowOffset: { height: 12, width: 0 },
     shadowOpacity: 0.16,
     shadowRadius: 28,
+    width: POSTER_WIDTH,
   },
   posterBadge: {
     backgroundColor: "rgba(255,255,255,0.12)",
@@ -465,6 +477,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "space-between",
+  },
+  posterTrack: {
+    flexDirection: "row",
+    gap: POSTER_GAP,
+  },
+  posterViewport: {
+    borderRadius: 32,
+    height: 226,
+    overflow: "hidden",
+    width: "100%",
   },
   recognizeCard: {
     alignItems: "center",
