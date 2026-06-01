@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Image, ScrollView, StyleSheet, Text, View, type DimensionValue } from "react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ScrollView, StyleSheet, Text, View, type DimensionValue } from "react-native";
 import { CameraView, type CameraCapturedPicture, type CameraType, useCameraPermissions } from "expo-camera";
 import { useLocalSearchParams } from "expo-router";
 
@@ -9,13 +9,67 @@ import { DEFAULT_FACE_API_BASE_URL } from "@/services/config/faceBackend";
 import { BackendFaceEngine } from "@/services/face/backendFaceEngine";
 import { OnDeviceFaceEngine } from "@/services/face/onDeviceFaceEngine";
 import type { FaceRecognitionResult } from "@/services/face/types";
-import { prepareFaceImageAsync, type PreparedFaceImage } from "@/services/image/prepareFaceImage";
+import { prepareFaceImageAsync } from "@/services/image/prepareFaceImage";
 
 const FRAME_SIZE = 320;
-const LIVE_FRAME_DELAY_MS = 900;
+const LIVE_FRAME_DELAY_MS = 180;
+const OVERLAY_ANIMATION_MS = 420;
+const NO_FACE_GRACE_MS = 1400;
+const STATUS_UPDATE_MS = 1200;
 
 function toPercent(value: number): DimensionValue {
   return `${Math.max(0, Math.min(100, (value / FRAME_SIZE) * 100))}%` as DimensionValue;
+}
+
+function lerp(start: number, end: number, progress: number) {
+  return start + (end - start) * progress;
+}
+
+function easeOutCubic(progress: number) {
+  return 1 - Math.pow(1 - progress, 3);
+}
+
+function resultKey(result: FaceRecognitionResult, index: number) {
+  if (result.person_id && result.person_id !== "unknown") {
+    return result.person_id;
+  }
+
+  const [top, right, bottom, left] = result.bbox;
+  const centerX = Math.round((left + right) / 2 / 24) * 24;
+  const centerY = Math.round((top + bottom) / 2 / 24) * 24;
+
+  return `unknown-${centerX}-${centerY}-${index}`;
+}
+
+function blendResult(from: FaceRecognitionResult, to: FaceRecognitionResult, progress: number): FaceRecognitionResult {
+  return {
+    ...to,
+    bbox: [
+      lerp(from.bbox[0], to.bbox[0], progress),
+      lerp(from.bbox[1], to.bbox[1], progress),
+      lerp(from.bbox[2], to.bbox[2], progress),
+      lerp(from.bbox[3], to.bbox[3], progress),
+    ],
+    landmarks: to.landmarks.map((landmark, index) => {
+      const previousLandmark = from.landmarks[index] ?? landmark;
+
+      return [lerp(previousLandmark[0], landmark[0], progress), lerp(previousLandmark[1], landmark[1], progress)];
+    }),
+    score: lerp(from.score, to.score, progress),
+    similarity: lerp(from.similarity, to.similarity, progress),
+  };
+}
+
+function blendResults(fromResults: FaceRecognitionResult[], toResults: FaceRecognitionResult[], progress: number) {
+  return toResults.map((toResult, index) => {
+    const key = resultKey(toResult, index);
+    const fromResult =
+      fromResults.find((candidate, candidateIndex) => resultKey(candidate, candidateIndex) === key) ??
+      fromResults[index] ??
+      toResult;
+
+    return blendResult(fromResult, toResult, progress);
+  });
 }
 
 function RecognitionOverlay({ results }: { results: FaceRecognitionResult[] }) {
@@ -76,10 +130,42 @@ export default function DetectScreen() {
   const [facing, setFacing] = useState<CameraType>("front");
   const [cameraReady, setCameraReady] = useState(false);
   const [isLive, setIsLive] = useState(true);
-  const [isProcessing, setIsProcessing] = useState(false);
   const [status, setStatus] = useState("Starting live face detection...");
-  const [preparedImage, setPreparedImage] = useState<PreparedFaceImage | null>(null);
+  const [liveMeta, setLiveMeta] = useState({ engine: "warming up", faces: 0 });
   const [results, setResults] = useState<FaceRecognitionResult[]>([]);
+  const animationFrameRef = useRef<number | null>(null);
+  const displayedResultsRef = useRef<FaceRecognitionResult[]>([]);
+  const noFaceSinceRef = useRef<number | null>(null);
+  const lastStatusAtRef = useRef(0);
+
+  const animateOverlayTo = useCallback((targetResults: FaceRecognitionResult[]) => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+
+    const startedAt = Date.now();
+    const sourceResults = displayedResultsRef.current;
+
+    function step() {
+      const rawProgress = Math.min(1, (Date.now() - startedAt) / OVERLAY_ANIMATION_MS);
+      const easedProgress = easeOutCubic(rawProgress);
+      const nextResults = blendResults(sourceResults, targetResults, easedProgress);
+
+      displayedResultsRef.current = nextResults;
+      setResults(nextResults);
+
+      if (rawProgress < 1) {
+        animationFrameRef.current = requestAnimationFrame(step);
+      } else {
+        displayedResultsRef.current = targetResults;
+        setResults(targetResults);
+        animationFrameRef.current = null;
+      }
+    }
+
+    animationFrameRef.current = requestAnimationFrame(step);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -126,12 +212,11 @@ export default function DetectScreen() {
         return;
       }
 
-      setIsProcessing(true);
-
       try {
         const startTime = Date.now();
         const photo = (await cameraRef.current.takePictureAsync({
-          quality: 0.55,
+          quality: 0.5,
+          shutterSound: false,
           skipProcessing: false,
         })) as CameraCapturedPicture | undefined;
 
@@ -143,15 +228,34 @@ export default function DetectScreen() {
         const recognition = await recognizeWithFallback(prepared.base64);
 
         if (!cancelled) {
-          setPreparedImage(prepared);
-          setResults(recognition.results);
-          setStatus(
-            `${recognition.engine === "on-device" ? "On-device" : "Backend"} live: ${
-              Date.now() - startTime
-            }ms | Faces: ${recognition.results.length}${
-              recognition.fallbackReason ? ` | ${recognition.fallbackReason}` : ""
-            }`,
-          );
+          const hasFaces = recognition.results.length > 0;
+
+          if (hasFaces) {
+            noFaceSinceRef.current = null;
+            animateOverlayTo(recognition.results);
+          } else {
+            noFaceSinceRef.current ??= Date.now();
+
+            if (Date.now() - noFaceSinceRef.current > NO_FACE_GRACE_MS) {
+              animateOverlayTo([]);
+            }
+          }
+
+          setLiveMeta({
+            engine: recognition.engine === "on-device" ? "On-device" : "Backend",
+            faces: recognition.results.length,
+          });
+
+          if (Date.now() - lastStatusAtRef.current > STATUS_UPDATE_MS) {
+            lastStatusAtRef.current = Date.now();
+            setStatus(
+              `${recognition.engine === "on-device" ? "On-device" : "Backend"} live overlay · ${
+                recognition.results.length
+              } face${recognition.results.length === 1 ? "" : "s"} · ${Date.now() - startTime}ms${
+                recognition.fallbackReason ? ` · ${recognition.fallbackReason}` : ""
+              }`,
+            );
+          }
         }
       } catch (error) {
         if (!cancelled) {
@@ -159,7 +263,6 @@ export default function DetectScreen() {
         }
       } finally {
         if (!cancelled) {
-          setIsProcessing(false);
           timeout = setTimeout(processFrame, LIVE_FRAME_DELAY_MS);
         }
       }
@@ -175,12 +278,18 @@ export default function DetectScreen() {
       if (timeout) {
         clearTimeout(timeout);
       }
+
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
     };
-  }, [apiBaseUrl, cameraReady, isLive, permission?.granted]);
+  }, [animateOverlayTo, apiBaseUrl, cameraReady, isLive, permission?.granted]);
 
   function switchCamera() {
     setCameraReady(false);
-    setPreparedImage(null);
+    displayedResultsRef.current = [];
+    noFaceSinceRef.current = null;
     setResults([]);
     setStatus("Switching camera...");
     setFacing((current) => (current === "front" ? "back" : "front"));
@@ -204,6 +313,7 @@ export default function DetectScreen() {
     <ScrollView contentContainerStyle={styles.container}>
       <View style={styles.cameraFrame}>
         <CameraView
+          animateShutter={false}
           key={facing}
           ref={cameraRef}
           facing={facing}
@@ -222,26 +332,23 @@ export default function DetectScreen() {
           onPress={() => setIsLive((current) => !current)}
           title={isLive ? "Stop Live Detection" : "Start Live Detection"}
         />
-        <ActionButton disabled={isProcessing} onPress={switchCamera} title="Switch Camera" variant="secondary" />
+        <ActionButton disabled={!cameraReady} onPress={switchCamera} title="Switch Camera" variant="secondary" />
       </View>
 
       <View style={styles.statusBox}>
-        {isProcessing ? <ActivityIndicator color="#1677FF" /> : null}
+        <View style={[styles.liveDot, { backgroundColor: isLive ? "#22C55E" : "#94A3B8" }]} />
         <Text style={styles.statusText}>{status}</Text>
       </View>
 
-      {preparedImage ? (
-        <View style={styles.previewCard}>
-          <Text style={styles.sectionTitle}>Last 320x320 Processed Frame</Text>
-          <View style={styles.previewFrame}>
-            <Image source={{ uri: preparedImage.uri }} style={styles.previewImage} />
-            <RecognitionOverlay results={results} />
-          </View>
-          <Text style={styles.muted}>
-            Green boxes are known faces. Amber boxes are unknown faces. Points are SCRFD landmarks.
-          </Text>
-        </View>
-      ) : null}
+      <View style={styles.liveHintCard}>
+        <Text style={styles.sectionTitle}>
+          {liveMeta.engine} · {liveMeta.faces} face{liveMeta.faces === 1 ? "" : "s"}
+        </Text>
+        <Text style={styles.muted}>
+          The camera stays live while the overlay glides between detection frames. Green boxes are known faces; amber
+          boxes are unknown faces.
+        </Text>
+      </View>
     </ScrollView>
   );
 }
@@ -302,6 +409,17 @@ const styles = StyleSheet.create({
     position: "absolute",
     width: 8,
   },
+  liveDot: {
+    borderRadius: 6,
+    height: 12,
+    width: 12,
+  },
+  liveHintCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 22,
+    gap: 8,
+    padding: 16,
+  },
   muted: {
     color: "#64748B",
     fontSize: 13,
@@ -324,25 +442,6 @@ const styles = StyleSheet.create({
     color: "#0F172A",
     fontSize: 24,
     fontWeight: "900",
-  },
-  previewCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 22,
-    gap: 10,
-    padding: 16,
-  },
-  previewFrame: {
-    aspectRatio: 1,
-    backgroundColor: "#E2E8F0",
-    borderRadius: 18,
-    overflow: "hidden",
-    position: "relative",
-    width: "100%",
-  },
-  previewImage: {
-    height: "100%",
-    position: "absolute",
-    width: "100%",
   },
   sectionTitle: {
     color: "#0F172A",
