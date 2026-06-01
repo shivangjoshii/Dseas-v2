@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from "react-native";
 import { router } from "expo-router";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ActionButton } from "@/components/ActionButton";
 import { AppIcon } from "@/components/AppIcon";
@@ -143,15 +144,14 @@ export default function SettingsScreen() {
 
   return (
     <View style={styles.screen}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.container}>
-        <View style={styles.appBar}>
-          <View style={styles.appBarIcon}>
-            <AppIcon android="settings" color="#1677FF" fallback="S" ios="gearshape.fill" size={23} />
-          </View>
-          <Text style={styles.appBarTitle}>Settings</Text>
-          <View style={styles.appBarGhost} />
+      <StatusBar backgroundColor="#0F172A" barStyle="light-content" />
+      <SafeAreaView edges={["top"]} style={styles.standardAppBarSafeArea}>
+        <View style={styles.standardAppBar}>
+          <Text style={styles.standardAppBarTitle}>Settings</Text>
         </View>
+      </SafeAreaView>
 
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.container}>
         <View style={styles.hero}>
           <Text style={styles.eyebrow}>Control Center</Text>
           <Text style={styles.title}>DSEAS Operations</Text>
@@ -294,40 +294,6 @@ const styles = StyleSheet.create({
   actionGrid: {
     gap: 10,
   },
-  appBar: {
-    alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.94)",
-    borderColor: "rgba(226,232,240,0.86)",
-    borderRadius: 24,
-    borderWidth: 1,
-    elevation: 8,
-    flexDirection: "row",
-    height: 58,
-    justifyContent: "space-between",
-    paddingHorizontal: 12,
-    shadowColor: "#0F172A",
-    shadowOffset: { height: 10, width: 0 },
-    shadowOpacity: 0.1,
-    shadowRadius: 22,
-  },
-  appBarGhost: {
-    height: 38,
-    width: 38,
-  },
-  appBarIcon: {
-    alignItems: "center",
-    backgroundColor: "#EAF2FF",
-    borderRadius: 19,
-    height: 38,
-    justifyContent: "center",
-    width: 38,
-  },
-  appBarTitle: {
-    color: "#0F172A",
-    fontSize: 18,
-    fontWeight: "900",
-    letterSpacing: 1.2,
-  },
   backendPanel: {
     marginTop: -4,
   },
@@ -335,7 +301,7 @@ const styles = StyleSheet.create({
     gap: 16,
     padding: 18,
     paddingBottom: 154,
-    paddingTop: 24,
+    paddingTop: 18,
   },
   disabled: {
     opacity: 0.55,
@@ -416,6 +382,20 @@ const styles = StyleSheet.create({
   screen: {
     backgroundColor: "#F7FAFF",
     flex: 1,
+  },
+  standardAppBar: {
+    alignItems: "center",
+    backgroundColor: "#0F172A",
+    height: 56,
+    justifyContent: "center",
+  },
+  standardAppBarSafeArea: {
+    backgroundColor: "#0F172A",
+  },
+  standardAppBarTitle: {
+    color: "#FFFFFF",
+    fontSize: 18,
+    fontWeight: "900",
   },
   settingHeader: {
     alignItems: "center",

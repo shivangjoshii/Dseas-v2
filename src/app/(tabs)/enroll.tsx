@@ -1,10 +1,10 @@
 import { useRef, useState } from "react";
-import { ActivityIndicator, Image, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Image, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from "react-native";
 import { CameraView, type CameraCapturedPicture, type CameraType, useCameraPermissions } from "expo-camera";
 import { useLocalSearchParams } from "expo-router";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ActionButton } from "@/components/ActionButton";
-import { AppIcon } from "@/components/AppIcon";
 import { withTimeout } from "@/services/async/withTimeout";
 import { DEFAULT_FACE_API_BASE_URL } from "@/services/config/faceBackend";
 import { BackendFaceEngine } from "@/services/face/backendFaceEngine";
@@ -124,15 +124,14 @@ export default function EnrollScreen() {
 
   return (
     <View style={styles.screen}>
-      <View style={styles.appBar}>
-        <View style={styles.appBarIcon}>
-          <AppIcon android="person_add" color="#1677FF" fallback="+" ios="person.crop.circle.badge.plus" size={23} />
+      <StatusBar backgroundColor="#0F172A" barStyle="light-content" />
+      <SafeAreaView edges={["top"]} style={styles.standardAppBarSafeArea}>
+        <View style={styles.standardAppBar}>
+          <Text style={styles.standardAppBarTitle}>Enroll</Text>
         </View>
-        <Text style={styles.appBarTitle}>Enroll</Text>
-        <View style={styles.appBarIconGhost} />
-      </View>
+      </SafeAreaView>
 
-    <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
       <View style={styles.formCard}>
         <Text style={styles.label}>Name</Text>
         <TextInput onChangeText={setName} placeholder="Person name" style={styles.input} value={name} />
@@ -171,48 +170,12 @@ export default function EnrollScreen() {
           <Image source={{ uri: preparedImage.uri }} style={styles.preview} />
         </View>
       ) : null}
-    </ScrollView>
+      </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  appBar: {
-    alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.94)",
-    borderColor: "rgba(226,232,240,0.86)",
-    borderRadius: 24,
-    borderWidth: 1,
-    elevation: 8,
-    flexDirection: "row",
-    height: 58,
-    justifyContent: "space-between",
-    marginHorizontal: 18,
-    marginTop: 24,
-    paddingHorizontal: 12,
-    shadowColor: "#0F172A",
-    shadowOffset: { height: 10, width: 0 },
-    shadowOpacity: 0.1,
-    shadowRadius: 22,
-  },
-  appBarIcon: {
-    alignItems: "center",
-    backgroundColor: "#EAF2FF",
-    borderRadius: 19,
-    height: 38,
-    justifyContent: "center",
-    width: 38,
-  },
-  appBarIconGhost: {
-    height: 38,
-    width: 38,
-  },
-  appBarTitle: {
-    color: "#0F172A",
-    fontSize: 18,
-    fontWeight: "900",
-    letterSpacing: 1.2,
-  },
   camera: {
     aspectRatio: 3 / 4,
     borderRadius: 24,
@@ -289,6 +252,20 @@ const styles = StyleSheet.create({
   screen: {
     backgroundColor: "#F7FAFF",
     flex: 1,
+  },
+  standardAppBar: {
+    alignItems: "center",
+    backgroundColor: "#0F172A",
+    height: 56,
+    justifyContent: "center",
+  },
+  standardAppBarSafeArea: {
+    backgroundColor: "#0F172A",
+  },
+  standardAppBarTitle: {
+    color: "#FFFFFF",
+    fontSize: 18,
+    fontWeight: "900",
   },
   sectionTitle: {
     color: "#0F172A",

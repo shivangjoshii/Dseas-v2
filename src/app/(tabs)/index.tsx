@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Animated, PanResponder, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, Animated, PanResponder, Pressable, StatusBar, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppIcon } from "@/components/AppIcon";
 import { DEFAULT_FACE_API_BASE_URL, normalizeApiBaseUrl } from "@/services/config/faceBackend";
@@ -30,6 +31,7 @@ const posters = [
 ];
 
 export default function Index() {
+  const insets = useSafeAreaInsets();
   const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_FACE_API_BASE_URL);
   const [posterIndex, setPosterIndex] = useState(0);
   const [serverStatus, setServerStatus] = useState("Configured");
@@ -52,7 +54,7 @@ export default function Index() {
   const appBarTop = scrollY.interpolate({
     extrapolate: "clamp",
     inputRange: [0, 72],
-    outputRange: [14, 0],
+    outputRange: [insets.top + 18, insets.top],
   });
   const appBarHeight = scrollY.interpolate({
     extrapolate: "clamp",
@@ -62,20 +64,20 @@ export default function Index() {
 
   const animatePoster = useCallback(
     (direction: 1 | -1) => {
-      posterTranslateX.setValue(direction * 34);
-      posterOpacity.setValue(0.5);
+      posterTranslateX.setValue(direction * 22);
+      posterOpacity.setValue(0.72);
       setPosterIndex((current) => (current + direction + posters.length) % posters.length);
 
       Animated.parallel([
         Animated.spring(posterTranslateX, {
-          damping: 18,
+          damping: 24,
           mass: 0.8,
-          stiffness: 150,
+          stiffness: 95,
           toValue: 0,
           useNativeDriver: true,
         }),
         Animated.timing(posterOpacity, {
-          duration: 220,
+          duration: 320,
           toValue: 1,
           useNativeDriver: true,
         }),
@@ -162,6 +164,7 @@ export default function Index() {
 
   return (
     <View style={styles.screen}>
+      <StatusBar backgroundColor="#F7FAFF" barStyle="dark-content" />
       <Animated.View
         style={[
           styles.appBar,
@@ -180,12 +183,12 @@ export default function Index() {
           onPress={() => Alert.alert("Notifications", "No new DSEAS alerts right now.")}
           style={styles.notificationButton}
         >
-          <AppIcon android="notifications" color="#1677FF" fallback="N" ios="bell.fill" size={22} />
+          <AppIcon android="notifications_active" color="#1677FF" fallback="N" ios="bell.fill" size={22} />
         </Pressable>
       </Animated.View>
 
       <Animated.ScrollView
-        contentContainerStyle={styles.container}
+        contentContainerStyle={[styles.container, { paddingTop: insets.top + 104 }]}
         onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], {
           useNativeDriver: false,
         })}
@@ -193,9 +196,7 @@ export default function Index() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.welcomeBlock}>
-          <View style={styles.waveBadge}>
-            <AppIcon android="waving_hand" color="#1677FF" fallback="Hi" ios="hand.wave.fill" size={24} />
-          </View>
+          <Text style={styles.waveEmoji}>👋</Text>
           <View style={styles.welcomeCopy}>
             <Text style={styles.welcomeText}>Welcome to</Text>
             <Text style={styles.welcomeTitle}>NHAI-DSEAS</Text>
@@ -329,7 +330,6 @@ const styles = StyleSheet.create({
     gap: 18,
     padding: 18,
     paddingBottom: 150,
-    paddingTop: 110,
   },
   greenDot: {
     backgroundColor: "#22C55E",
@@ -550,13 +550,9 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "900",
   },
-  waveBadge: {
-    alignItems: "center",
-    backgroundColor: "#EAF2FF",
-    borderRadius: 18,
-    height: 42,
-    justifyContent: "center",
-    width: 42,
+  waveEmoji: {
+    fontSize: 34,
+    lineHeight: 40,
   },
   welcomeBlock: {
     alignItems: "center",
