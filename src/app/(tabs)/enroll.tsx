@@ -63,54 +63,49 @@ export default function EnrollScreen() {
         personId: personId.trim() || undefined,
         imageBase64: prepared.base64,
       };
-      let response;
-      let enrolledLocally = false;
+      let localUnavailableError: unknown = null;
 
       try {
-        response = await withTimeout(
+        const localResponse = await withTimeout(
           new OnDeviceFaceEngine().enroll(enrollmentPayload),
           12000,
           "On-device enrollment timed out",
         );
 
-        if (!response.success) {
-          throw new Error(response.error || "Local enrollment failed");
+        if (!localResponse.success) {
+          const message = localResponse.error || "Local enrollment failed";
+          setStatus(message);
+          showSnackbar(message, "error");
+          return;
         }
 
-        enrolledLocally = true;
-      } catch (localError) {
-        setStatus("Local engine unavailable in this build. Trying backend enrollment fallback...");
-        response = await new BackendFaceEngine({ apiBaseUrl }).enroll(enrollmentPayload);
-
-        if (!response.success) {
-          throw new Error(response.error || "Backend enrollment failed");
-        }
-
-        await saveLocalFaceMetadata(response.person_id ?? (personId.trim() || name.trim()), name.trim());
-        setStatus(
-          localError instanceof Error
-            ? `Backend enrollment succeeded. Local embedding unavailable: ${localError.message}`
-            : "Backend enrollment succeeded. Local embedding unavailable in this build.",
-        );
-        showSnackbar("Face enrolled using backend fallback.", "success");
-        return;
-      }
-
-      const enrolledPersonId = response.person_id ?? (personId.trim() || name.trim());
-      setStatus(`Enrolled ${name.trim()} locally as ${enrolledPersonId}. Trying backend mirror...`);
-
-      try {
-        await new BackendFaceEngine({ apiBaseUrl }).enroll(enrollmentPayload);
-        setStatus(`Enrolled ${name.trim()} locally and mirrored to backend.`);
-        showSnackbar(`Face enrolled: ${name.trim()}`, "success");
-      } catch {
-        setStatus(
-          enrolledLocally
-            ? `Enrolled ${name.trim()} locally. Backend mirror skipped/offline; sync can happen later.`
-            : `Enrolled ${name.trim()} as ${enrolledPersonId}.`,
-        );
+        const enrolledPersonId = localResponse.person_id ?? (personId.trim() || name.trim());
+        setStatus(`Enrolled ${name.trim()} locally as ${enrolledPersonId}. Attendance will sync from local queue.`);
         showSnackbar(`Face enrolled locally: ${name.trim()}`, "success");
+        return;
+      } catch (localError) {
+        localUnavailableError = localError;
       }
+
+      setStatus("Local engine could not run. Trying backend enrollment fallback...");
+      const backendResponse = await new BackendFaceEngine({ apiBaseUrl }).enroll(enrollmentPayload);
+
+      if (!backendResponse.success) {
+        throw new Error(backendResponse.error || "Backend enrollment failed");
+      }
+
+      await saveLocalFaceMetadata(
+        backendResponse.person_id ?? (personId.trim() || name.trim()),
+        name.trim(),
+        null,
+        { synced: true },
+      );
+      setStatus(
+        localUnavailableError instanceof Error
+          ? `Backend fallback enrolled ${name.trim()}. Local embedding unavailable: ${localUnavailableError.message}`
+          : `Backend fallback enrolled ${name.trim()}. Local embedding unavailable in this build.`,
+      );
+      showSnackbar("Face enrolled using backend fallback.", "success");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Enrollment failed");
       showSnackbar(error instanceof Error ? error.message : "Enrollment failed", "error");

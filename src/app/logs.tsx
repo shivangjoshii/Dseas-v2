@@ -4,8 +4,6 @@ import { useLocalSearchParams } from "expo-router";
 
 import { ActionButton } from "@/components/ActionButton";
 import { DEFAULT_FACE_API_BASE_URL } from "@/services/config/faceBackend";
-import { BackendFaceEngine } from "@/services/face/backendFaceEngine";
-import type { BackendAttendanceLog } from "@/services/face/types";
 import { getAttendanceRecords, type LocalAttendanceRecord } from "@/services/storage/database";
 import { syncAttendanceQueue } from "@/services/sync/syncService";
 
@@ -13,7 +11,6 @@ export default function LogsScreen() {
   const params = useLocalSearchParams<{ apiBaseUrl?: string }>();
   const apiBaseUrl = params.apiBaseUrl ?? DEFAULT_FACE_API_BASE_URL;
   const [localLogs, setLocalLogs] = useState<LocalAttendanceRecord[]>([]);
-  const [backendLogs, setBackendLogs] = useState<BackendAttendanceLog[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState("Local buffer is ready.");
 
@@ -21,20 +18,15 @@ export default function LogsScreen() {
     setIsLoading(true);
 
     try {
-      const [localRecords, remoteRecords] = await Promise.all([
-        getAttendanceRecords(100),
-        new BackendFaceEngine({ apiBaseUrl }).getAttendanceLogs(50).catch(() => []),
-      ]);
-
+      const localRecords = await getAttendanceRecords(100);
       setLocalLogs(localRecords);
-      setBackendLogs(remoteRecords);
-      setStatus(`Loaded ${localRecords.length} local and ${remoteRecords.length} backend records.`);
+      setStatus(`Loaded ${localRecords.length} local record${localRecords.length === 1 ? "" : "s"}.`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Could not load logs");
     } finally {
       setIsLoading(false);
     }
-  }, [apiBaseUrl]);
+  }, []);
 
   async function syncAndRefresh() {
     setIsLoading(true);
@@ -73,7 +65,7 @@ export default function LogsScreen() {
     <ScrollView contentContainerStyle={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Attendance Logs</Text>
-        <Text style={styles.subtitle}>Local queue first, backend logs second. Unsynced records stay buffered.</Text>
+        <Text style={styles.subtitle}>Local queue first. Backend is used only when syncing queued records.</Text>
       </View>
 
       <View style={styles.controls}>
@@ -105,20 +97,8 @@ export default function LogsScreen() {
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Backend Logs</Text>
-        {backendLogs.length === 0 ? (
-          <Text style={styles.muted}>No backend logs loaded.</Text>
-        ) : (
-          backendLogs.map((record) => (
-            <View key={`${record.id}-${record.timestamp}`} style={styles.logRow}>
-              <Text style={styles.logName}>{record.name}</Text>
-              <Text style={styles.logMeta}>ID: {record.person_id}</Text>
-              <Text style={styles.logMeta}>Confidence: {(record.confidence * 100).toFixed(1)}%</Text>
-              <Text style={styles.logMeta}>Location: {record.location}</Text>
-              <Text style={styles.logMeta}>{record.timestamp}</Text>
-            </View>
-          ))
-        )}
+        <Text style={styles.sectionTitle}>Cloud Sync Policy</Text>
+        <Text style={styles.muted}>Cloud/backend is not contacted while viewing logs. Press Sync Queue to upload buffered records.</Text>
       </View>
     </ScrollView>
   );

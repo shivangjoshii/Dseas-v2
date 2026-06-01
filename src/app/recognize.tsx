@@ -47,6 +47,7 @@ export default function RecognizeScreen() {
 
       setStatus("Running on-device face engine...");
       let response;
+      let usedBackendFallback = false;
 
       try {
         response = await withTimeout(
@@ -55,7 +56,8 @@ export default function RecognizeScreen() {
           "On-device recognition timed out",
         );
       } catch (localError) {
-        setStatus("On-device engine unavailable in this build. Trying backend fallback...");
+        usedBackendFallback = true;
+        setStatus("On-device engine could not run. Trying backend fallback...");
         response = await new BackendFaceEngine({ apiBaseUrl }).recognize({ imageBase64: prepared.base64 });
         response.results = response.results.map((result) => ({
           ...result,
@@ -78,16 +80,16 @@ export default function RecognizeScreen() {
           name: match.name,
           confidence: match.similarity,
           liveness_verified: match.liveness_verified !== false,
-          location: match.engine === "on-device" ? "MOBILE_ON_DEVICE_RECOGNITION" : "MOBILE_BACKEND_RECOGNITION",
-          synced: match.engine === "backend",
-          cloud_id: match.engine === "backend" ? `backend:${Date.now()}:${match.person_id}` : null,
-          source: match.engine === "on-device" ? "local" : "backend",
+          location: usedBackendFallback ? "MOBILE_BACKEND_FALLBACK_RECOGNITION" : "MOBILE_ON_DEVICE_RECOGNITION",
+          synced: false,
+          cloud_id: null,
+          source: usedBackendFallback ? "backend" : "local",
         });
       }
 
       setStatus(
         matches.length > 0
-          ? `Marked ${matches.length} attendance record${matches.length === 1 ? "" : "s"} locally.`
+          ? `Marked ${matches.length} attendance record${matches.length === 1 ? "" : "s"} in local sync queue.`
           : "No known face matched.",
       );
     } catch (error) {
@@ -134,9 +136,9 @@ export default function RecognizeScreen() {
 
       {preparedImage ? (
         <View style={styles.previewCard}>
-          <Text style={styles.sectionTitle}>Prepared Backend Frame</Text>
+          <Text style={styles.sectionTitle}>Prepared Local Frame</Text>
           <Image source={{ uri: preparedImage.uri }} style={styles.preview} />
-          <Text style={styles.muted}>Sent as 320x320 JPEG base64, matching the backend web camera flow.</Text>
+          <Text style={styles.muted}>Processed as a 320x320 JPEG frame for the local engine first.</Text>
         </View>
       ) : null}
 

@@ -89,14 +89,19 @@ export async function getFaceDatabase() {
   return databasePromise;
 }
 
-export async function saveLocalFaceMetadata(personId: string, name: string, embedding?: number[] | null) {
+export async function saveLocalFaceMetadata(
+  personId: string,
+  name: string,
+  embedding?: number[] | null,
+  options: { synced?: boolean } = {},
+) {
   const database = await getFaceDatabase();
   const timestamp = new Date().toISOString();
 
   await database.runAsync(
     `
       INSERT INTO local_faces (person_id, name, embedding_json, created_at, updated_at, synced)
-      VALUES (?, ?, ?, ?, ?, 1)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(person_id) DO UPDATE SET
         name = excluded.name,
         embedding_json = COALESCE(excluded.embedding_json, local_faces.embedding_json),
@@ -108,6 +113,7 @@ export async function saveLocalFaceMetadata(personId: string, name: string, embe
     embedding ? JSON.stringify(embedding) : null,
     timestamp,
     timestamp,
+    options.synced ? 1 : 0,
   );
 
   faceEmbeddingDatabaseCache = null;
