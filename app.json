@@ -17,7 +17,11 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA"
+      ],
+      "package": "com.anonymous.dseasv2"
     },
     "web": {
       "output": "static",
@@ -25,6 +29,14 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow dseas-v2 to use the camera for face attendance verification.",
+          "microphonePermission": "Allow dseas-v2 to access the microphone.",
+          "recordAudioAndroid": false
+        }
+      ],
       [
         "expo-splash-screen",
         {
@@ -34,7 +46,9 @@
             "imageWidth": 76
           }
         }
-      ]
+      ],
+      "expo-sqlite",
+      "onnxruntime-react-native"
     ],
     "experiments": {
       "typedRoutes": true,
