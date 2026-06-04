@@ -3,7 +3,11 @@ import type * as Ort from "onnxruntime-react-native";
 import { withTimeout } from "@/services/async/withTimeout";
 import { buildFaceEmbeddingTensor } from "@/services/face/faceAlignment";
 import { findBestEmbeddingMatch, l2Normalize } from "@/services/face/faceMath";
-import { runPassiveLivenessQualityCheck } from "@/services/face/liveness";
+import {
+  buildMiniFasNetLivenessTensor,
+  runPassiveLivenessQualityCheck,
+  scoreMiniFasNetLiveness,
+} from "@/services/face/liveness";
 import { getFaceModelUris } from "@/services/face/modelAssets";
 import { decodeScrfdOutputs, type Detection } from "@/services/face/scrfdDetector";
 import type {
@@ -13,8 +17,10 @@ import type {
   DetectFaceResponse,
   EnrollFaceRequest,
   EnrollFaceResponse,
+  FaceBoundingBox,
   FaceEngine,
   FaceDetectionResult,
+  FaceLandmark,
   FaceRecognitionResult,
   HealthResponse,
   RecognizeFaceRequest,
@@ -35,6 +41,7 @@ type LoadedRuntime = {
   ort: OrtRuntimeApi;
   detectorSession: OrtSession;
   embedderSession: OrtSession;
+  livenessSession: OrtSession;
 };
 
 let runtimePromise: Promise<LoadedRuntime> | null = null;
@@ -42,6 +49,7 @@ const SESSION_LOAD_TIMEOUT_MS = 20000;
 const RUNTIME_LOAD_TIMEOUT_MS = 45000;
 const DEFAULT_DETECTION_CONFIDENCE = 0.5;
 const DEFAULT_MAX_DETECTIONS = 8;
+const DETECTOR_INPUT_SIZE = 320;
 
 function resolveOrtRuntime(...candidates: unknown[]): OrtRuntimeApi {
   for (const candidate of candidates) {
@@ -74,28 +82,36 @@ async function loadRuntime() {
       (async () => {
         const reactNativeOrt = await import("onnxruntime-react-native");
         const ort = resolveOrtRuntime(reactNativeOrt);
-        const { detectorUri, embedderUri } = await getFaceModelUris();
+        const { detectorUri, embedderUri, livenessUri } = await getFaceModelUris();
         const sessionOptions: Ort.InferenceSession.SessionOptions = {
           graphOptimizationLevel: "basic",
           intraOpNumThreads: 4,
           interOpNumThreads: 1,
         };
 
-        const detectorSession = await withTimeout(
-          ort.InferenceSession.create(detectorUri, sessionOptions),
-          SESSION_LOAD_TIMEOUT_MS,
-          "Detector ONNX session load timed out",
-        );
-        const embedderSession = await withTimeout(
-          ort.InferenceSession.create(embedderUri, sessionOptions),
-          SESSION_LOAD_TIMEOUT_MS,
-          "Embedding ONNX session load timed out",
-        );
+        const [detectorSession, embedderSession, livenessSession] = await Promise.all([
+          withTimeout(
+            ort.InferenceSession.create(detectorUri, sessionOptions),
+            SESSION_LOAD_TIMEOUT_MS,
+            "Detector ONNX session load timed out",
+          ),
+          withTimeout(
+            ort.InferenceSession.create(embedderUri, sessionOptions),
+            SESSION_LOAD_TIMEOUT_MS,
+            "Embedding ONNX session load timed out",
+          ),
+          withTimeout(
+            ort.InferenceSession.create(livenessUri, sessionOptions),
+            SESSION_LOAD_TIMEOUT_MS,
+            "MiniFASNet liveness ONNX session load timed out",
+          ),
+        ]);
 
         return {
           ort,
           detectorSession,
           embedderSession,
+          livenessSession,
         };
       })(),
       RUNTIME_LOAD_TIMEOUT_MS,
@@ -123,8 +139,13 @@ async function detectFaces(
   image: RgbImage,
   options: { confidenceThreshold?: number; maxDetections?: number } = {},
 ) {
-  const tensorData = imageToNchwTensor(image, 320);
-  const tensor = new runtime.ort.Tensor("float32", tensorData, [1, 3, 320, 320]);
+  const tensorData = imageToNchwTensor(image, DETECTOR_INPUT_SIZE);
+  const tensor = new runtime.ort.Tensor("float32", tensorData, [
+    1,
+    3,
+    DETECTOR_INPUT_SIZE,
+    DETECTOR_INPUT_SIZE,
+  ]);
   const outputs = await runtime.detectorSession.run({
     [runtime.detectorSession.inputNames[0]]: tensor,
   });
@@ -136,8 +157,35 @@ async function detectFaces(
   });
 }
 
+function scaleBoundingBoxToImage(bbox: FaceBoundingBox, image: RgbImage): FaceBoundingBox {
+  const scaleX = image.width / DETECTOR_INPUT_SIZE;
+  const scaleY = image.height / DETECTOR_INPUT_SIZE;
+
+  return [bbox[0] * scaleY, bbox[1] * scaleX, bbox[2] * scaleY, bbox[3] * scaleX];
+}
+
+function scaleLandmarksToImage(landmarks: FaceLandmark[], image: RgbImage): FaceLandmark[] {
+  const scaleX = image.width / DETECTOR_INPUT_SIZE;
+  const scaleY = image.height / DETECTOR_INPUT_SIZE;
+
+  return landmarks.map(([x, y]) => [x * scaleX, y * scaleY]);
+}
+
+function scaleDetectionToImage(detection: Detection, image: RgbImage): Detection {
+  if (image.width === DETECTOR_INPUT_SIZE && image.height === DETECTOR_INPUT_SIZE) {
+    return detection;
+  }
+
+  return {
+    ...detection,
+    bbox: scaleBoundingBoxToImage(detection.bbox, image),
+    landmarks: scaleLandmarksToImage(detection.landmarks, image),
+  };
+}
+
 async function generateEmbedding(runtime: LoadedRuntime, image: RgbImage, detection: Detection) {
-  const faceTensorData = buildFaceEmbeddingTensor(image, detection.bbox, detection.landmarks);
+  const imageDetection = scaleDetectionToImage(detection, image);
+  const faceTensorData = buildFaceEmbeddingTensor(image, imageDetection.bbox, imageDetection.landmarks);
   const tensor = new runtime.ort.Tensor("float32", faceTensorData, [1, 3, 112, 112]);
   const outputs = await runtime.embedderSession.run({
     [runtime.embedderSession.inputNames[0]]: tensor,
@@ -149,17 +197,44 @@ async function generateEmbedding(runtime: LoadedRuntime, image: RgbImage, detect
   return l2Normalize(rawEmbedding);
 }
 
-function detectionToResult(detection: Detection, imageWidth: number): FaceDetectionResult {
-  const quality = runPassiveLivenessQualityCheck(detection.bbox, detection.landmarks, detection.score, imageWidth);
+async function runMiniFasNetLiveness(runtime: LoadedRuntime, image: RgbImage, detection: Detection) {
+  const passiveQuality = runPassiveLivenessQualityCheck(
+    detection.bbox,
+    detection.landmarks,
+    detection.score,
+    DETECTOR_INPUT_SIZE,
+  );
+  const imageDetection = scaleDetectionToImage(detection, image);
+  const livenessTensorData = buildMiniFasNetLivenessTensor(image, imageDetection.bbox);
+  const tensor = new runtime.ort.Tensor("float32", livenessTensorData, [1, 3, 128, 128]);
+  const outputs = await runtime.livenessSession.run({
+    [runtime.livenessSession.inputNames[0]]: tensor,
+  });
+  const outputName = runtime.livenessSession.outputNames[0];
+  const output = outputs[outputName];
+
+  return scoreMiniFasNetLiveness(output.data as ArrayLike<number>, passiveQuality);
+}
+
+async function detectionToResult(
+  runtime: LoadedRuntime,
+  image: RgbImage,
+  detection: Detection,
+  livenessMode: DetectFaceRequest["livenessMode"] = "model",
+): Promise<FaceDetectionResult> {
+  const liveness =
+    livenessMode === "passive"
+      ? runPassiveLivenessQualityCheck(detection.bbox, detection.landmarks, detection.score, DETECTOR_INPUT_SIZE)
+      : await runMiniFasNetLiveness(runtime, image, detection);
 
   return {
     bbox: detection.bbox,
     score: detection.score,
     landmarks: detection.landmarks,
     engine: "on-device",
-    liveness_verified: quality.verified,
-    liveness_score: quality.score,
-    liveness_reason: quality.reason,
+    liveness_verified: liveness.verified,
+    liveness_score: liveness.score,
+    liveness_reason: liveness.reason,
   };
 }
 
@@ -169,7 +244,7 @@ export class OnDeviceFaceEngine implements FaceEngine {
 
     return {
       status: "ok",
-      version: "on-device-onnx-scrfd-edgeface",
+      version: "on-device-onnx-scrfd-minifasnet-edgeface",
     };
   }
 
@@ -180,7 +255,11 @@ export class OnDeviceFaceEngine implements FaceEngine {
       confidenceThreshold: request.confidenceThreshold,
       maxDetections: request.maxDetections,
     });
-    const results = detections.map((detection) => detectionToResult(detection, image.width));
+    const results: FaceDetectionResult[] = [];
+
+    for (const detection of detections) {
+      results.push(await detectionToResult(runtime, image, detection, request.livenessMode));
+    }
 
     return {
       success: true,
@@ -205,10 +284,26 @@ export class OnDeviceFaceEngine implements FaceEngine {
     }
 
     const detection = selectEnrollmentDetection(detections);
+    const detectionResult = await detectionToResult(runtime, image, detection);
+
+    if (detectionResult.liveness_verified === false) {
+      return {
+        success: true,
+        results: [
+          {
+            ...detectionResult,
+            person_id: "unknown",
+            name: "Liveness failed",
+            similarity: 0,
+          },
+        ],
+        count: 1,
+      };
+    }
+
     const database = await getLocalFaceEmbeddingDatabase();
     const embedding = await generateEmbedding(runtime, image, detection);
     const match = findBestEmbeddingMatch(database, embedding, 0.45);
-    const detectionResult = detectionToResult(detection, image.width);
     const results: FaceRecognitionResult[] = [
       {
         ...detectionResult,
@@ -225,10 +320,61 @@ export class OnDeviceFaceEngine implements FaceEngine {
     };
   }
 
+  async recognizeDetectedPrimary(request: RecognizeFaceRequest & { detection: FaceDetectionResult }): Promise<RecognizeFaceResponse> {
+    const runtime = await loadRuntime();
+    const image = decodeJpegBase64(request.imageBase64);
+    const detection: Detection = {
+      bbox: request.detection.bbox,
+      landmarks: request.detection.landmarks,
+      score: request.detection.score,
+    };
+    const detectionResult = {
+      ...request.detection,
+      engine: "on-device" as const,
+      liveness_verified: request.detection.liveness_verified !== false,
+    };
+
+    if (detectionResult.liveness_verified === false) {
+      return {
+        success: true,
+        results: [
+          {
+            ...detectionResult,
+            person_id: "unknown",
+            name: "Liveness failed",
+            similarity: 0,
+          },
+        ],
+        count: 1,
+      };
+    }
+
+    const [database, embedding] = await Promise.all([
+      getLocalFaceEmbeddingDatabase(),
+      generateEmbedding(runtime, image, detection),
+    ]);
+    const match = findBestEmbeddingMatch(database, embedding, 0.45);
+
+    return {
+      success: true,
+      results: [
+        {
+          ...detectionResult,
+          person_id: match?.person_id ?? "unknown",
+          name: match?.name ?? "Unknown",
+          similarity: match?.similarity ?? 0,
+        },
+      ],
+      count: 1,
+    };
+  }
+
   async enroll(request: EnrollFaceRequest): Promise<EnrollFaceResponse> {
     const runtime = await loadRuntime();
     const image = decodeJpegBase64(request.imageBase64);
-    const detections = await detectFaces(runtime, image);
+    const detections = await detectFaces(runtime, image, {
+      maxDetections: 1,
+    });
 
     if (detections.length === 0) {
       return {
@@ -238,12 +384,12 @@ export class OnDeviceFaceEngine implements FaceEngine {
     }
 
     const detection = selectEnrollmentDetection(detections);
-    const quality = runPassiveLivenessQualityCheck(detection.bbox, detection.landmarks, detection.score, image.width);
+    const liveness = await runMiniFasNetLiveness(runtime, image, detection);
 
-    if (!quality.verified) {
+    if (!liveness.verified) {
       return {
         success: false,
-        error: quality.reason,
+        error: liveness.reason,
       };
     }
 
@@ -261,15 +407,27 @@ export class OnDeviceFaceEngine implements FaceEngine {
     const runtime = await loadRuntime();
     const image = decodeJpegBase64(request.imageBase64);
     const detections = await detectFaces(runtime, image, {
-      maxDetections: request.maxFaces,
+      maxDetections: request.maxFaces ?? 1,
     });
-    const database = await getLocalFaceEmbeddingDatabase();
+    let database: Awaited<ReturnType<typeof getLocalFaceEmbeddingDatabase>> | null = null;
     const results: FaceRecognitionResult[] = [];
 
     for (const detection of detections) {
+      const detectionResult = await detectionToResult(runtime, image, detection);
+
+      if (detectionResult.liveness_verified === false) {
+        results.push({
+          ...detectionResult,
+          person_id: "unknown",
+          name: "Liveness failed",
+          similarity: 0,
+        });
+        continue;
+      }
+
       const embedding = await generateEmbedding(runtime, image, detection);
+      database ??= await getLocalFaceEmbeddingDatabase();
       const match = findBestEmbeddingMatch(database, embedding, 0.45);
-      const detectionResult = detectionToResult(detection, image.width);
 
       results.push({
         ...detectionResult,

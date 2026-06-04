@@ -23,6 +23,7 @@ export type FaceRecognitionResult = FaceDetectionResult & {
 export type DetectFaceRequest = {
   imageBase64: string;
   confidenceThreshold?: number;
+  livenessMode?: "model" | "passive";
   maxDetections?: number;
 };
 

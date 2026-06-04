@@ -5,54 +5,163 @@ import { useLocalSearchParams } from "expo-router";
 
 import { ActionButton } from "@/components/ActionButton";
 import { withTimeout } from "@/services/async/withTimeout";
+import { pickRealtimePictureSize } from "@/services/camera/pictureSize";
 import { DEFAULT_FACE_API_BASE_URL } from "@/services/config/faceBackend";
 import { BackendFaceEngine } from "@/services/face/backendFaceEngine";
 import { OnDeviceFaceEngine } from "@/services/face/onDeviceFaceEngine";
-import type { FaceRecognitionResult } from "@/services/face/types";
+import type { FaceDetectionResult, FaceRecognitionResult } from "@/services/face/types";
 import { prepareFaceImageAsync, type PreparedFaceImage } from "@/services/image/prepareFaceImage";
 import { saveAttendanceRecord } from "@/services/storage/database";
+
+const RECOGNITION_CAPTURE_SIZE = 256;
+const ACTIVE_HEAD_TURN_THRESHOLD = 0.075;
+const ACTIVE_LIVENESS_FRAMES = 3;
+const ACTIVE_LIVENESS_DELAY_MS = 140;
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function estimateHeadYaw(result: FaceDetectionResult) {
+  if (result.landmarks.length < 3) {
+    return 0;
+  }
+
+  const [leftEye, rightEye, nose] = result.landmarks;
+  const [top, right, bottom, left] = result.bbox;
+  const faceWidth = Math.max(1, right - left);
+  const eyeCenterX = (leftEye[0] + rightEye[0]) / 2;
+  const verticalPenalty = Math.max(1, bottom - top) / faceWidth;
+
+  return ((nose[0] - eyeCenterX) / faceWidth) * verticalPenalty;
+}
 
 export default function RecognizeScreen() {
   const params = useLocalSearchParams<{ apiBaseUrl?: string }>();
   const apiBaseUrl = params.apiBaseUrl ?? DEFAULT_FACE_API_BASE_URL;
   const cameraRef = useRef<CameraView | null>(null);
+  const localEngineRef = useRef(new OnDeviceFaceEngine());
   const [permission, requestPermission] = useCameraPermissions();
   const [facing, setFacing] = useState<CameraType>("front");
+  const [cameraReady, setCameraReady] = useState(false);
+  const [pictureSize, setPictureSize] = useState<string | undefined>();
   const [isProcessing, setIsProcessing] = useState(false);
   const [status, setStatus] = useState("Capture a face to recognize and mark attendance.");
+  const [livenessStatus, setLivenessStatus] = useState("Active liveness required before marking.");
   const [preparedImage, setPreparedImage] = useState<PreparedFaceImage | null>(null);
   const [results, setResults] = useState<FaceRecognitionResult[]>([]);
 
+  async function capturePreparedFrame() {
+    if (!cameraRef.current) {
+      throw new Error("Camera is not ready");
+    }
+
+    const photo = (await cameraRef.current.takePictureAsync({
+      quality: 0.24,
+      shutterSound: false,
+      skipProcessing: true,
+    })) as CameraCapturedPicture | undefined;
+
+    if (!photo) {
+      throw new Error("Camera did not return a picture");
+    }
+
+    return prepareFaceImageAsync(photo, {
+      compress: 0.24,
+      size: RECOGNITION_CAPTURE_SIZE,
+    });
+  }
+
+  async function runActiveLivenessChallenge() {
+    let minYaw: number | null = null;
+    let maxYaw: number | null = null;
+    let validFrames = 0;
+    let latestPrepared: PreparedFaceImage | null = null;
+    let latestDetection: FaceDetectionResult | null = null;
+
+    setLivenessStatus("Look at camera, then turn head left/right.");
+
+    for (let frameIndex = 0; frameIndex < ACTIVE_LIVENESS_FRAMES; frameIndex += 1) {
+      if (frameIndex > 0) {
+        await wait(ACTIVE_LIVENESS_DELAY_MS);
+      }
+
+      const prepared = await capturePreparedFrame();
+      const detection = await withTimeout(
+        localEngineRef.current.detect({
+          confidenceThreshold: 0.55,
+          imageBase64: prepared.base64,
+          livenessMode: "passive",
+          maxDetections: 1,
+        }),
+        1200,
+        "Active liveness detection timed out",
+      );
+      const face = detection.detections[0];
+
+      if (!face) {
+        setLivenessStatus("No face found. Keep your face inside frame.");
+        continue;
+      }
+
+      const yaw = estimateHeadYaw(face);
+      validFrames += 1;
+      minYaw = minYaw === null ? yaw : Math.min(minYaw, yaw);
+      maxYaw = maxYaw === null ? yaw : Math.max(maxYaw, yaw);
+      latestPrepared = prepared;
+      latestDetection = face;
+
+      if (validFrames >= ACTIVE_LIVENESS_FRAMES && maxYaw - minYaw >= ACTIVE_HEAD_TURN_THRESHOLD) {
+        setLivenessStatus("Active liveness verified.");
+        return {
+          detection: latestDetection,
+          prepared: latestPrepared,
+        };
+      }
+
+      setLivenessStatus(yaw < 0 ? "Turn head right a little." : "Turn head left a little.");
+    }
+
+    throw new Error("Active liveness failed. Static photos/screenshots are blocked. Turn your real face left and right.");
+  }
+
+  async function configureFastPictureSize() {
+    try {
+      const availableSizes = await cameraRef.current?.getAvailablePictureSizesAsync();
+      const fastSize = pickRealtimePictureSize(availableSizes ?? []);
+
+      if (fastSize) {
+        setPictureSize(fastSize);
+      }
+    } catch {
+      setPictureSize(undefined);
+    }
+  }
+
   async function captureAndRecognize() {
-    if (!cameraRef.current || isProcessing) {
+    if (!cameraRef.current || isProcessing || !cameraReady) {
       return;
     }
 
     setIsProcessing(true);
-    setStatus("Capturing frame...");
+    setStatus("Verifying active liveness...");
 
     try {
-      const photo = (await cameraRef.current.takePictureAsync({
-        quality: 0.7,
-        skipProcessing: false,
-      })) as CameraCapturedPicture | undefined;
-
-      if (!photo) {
-        throw new Error("Camera did not return a picture");
-      }
-
-      setStatus("Preparing 320x320 face frame...");
-      const prepared = await prepareFaceImageAsync(photo);
+      const { detection, prepared } = await runActiveLivenessChallenge();
       setPreparedImage(prepared);
 
-      setStatus("Running on-device face engine...");
+      setStatus("Running on-device recognition on verified live face...");
       let response;
       let usedBackendFallback = false;
 
       try {
         response = await withTimeout(
-          new OnDeviceFaceEngine().recognize({ imageBase64: prepared.base64 }),
-          10000,
+          localEngineRef.current.recognizeDetectedPrimary({
+            detection,
+            imageBase64: prepared.base64,
+            maxFaces: 1,
+          }),
+          1200,
           "On-device recognition timed out",
         );
       } catch (localError) {
@@ -79,7 +188,7 @@ export default function RecognizeScreen() {
           person_id: match.person_id,
           name: match.name,
           confidence: match.similarity,
-          liveness_verified: match.liveness_verified !== false,
+          liveness_verified: true,
           location: usedBackendFallback ? "MOBILE_BACKEND_FALLBACK_RECOGNITION" : "MOBILE_ON_DEVICE_RECOGNITION",
           synced: false,
           cloud_id: null,
@@ -116,14 +225,28 @@ export default function RecognizeScreen() {
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <View style={styles.cameraCard}>
-        <CameraView ref={cameraRef} facing={facing} style={styles.camera} />
+        <CameraView
+          animateShutter={false}
+          ref={cameraRef}
+          facing={facing}
+          onCameraReady={() => {
+            setCameraReady(true);
+            void configureFastPictureSize();
+          }}
+          pictureSize={pictureSize}
+          style={styles.camera}
+        />
       </View>
 
       <View style={styles.controls}>
-        <ActionButton disabled={isProcessing} onPress={captureAndRecognize} title="Capture & Recognize" />
+        <ActionButton disabled={isProcessing || !cameraReady} onPress={captureAndRecognize} title="Verify Live & Recognize" />
         <ActionButton
           disabled={isProcessing}
-          onPress={() => setFacing((current) => (current === "front" ? "back" : "front"))}
+          onPress={() => {
+            setCameraReady(false);
+            setPictureSize(undefined);
+            setFacing((current) => (current === "front" ? "back" : "front"));
+          }}
           title="Switch Camera"
           variant="secondary"
         />
@@ -133,12 +256,18 @@ export default function RecognizeScreen() {
         {isProcessing ? <ActivityIndicator color="#1677FF" /> : null}
         <Text style={styles.statusText}>{status}</Text>
       </View>
+      <View style={styles.livenessBox}>
+        <Text style={styles.livenessText}>{livenessStatus}</Text>
+      </View>
 
       {preparedImage ? (
         <View style={styles.previewCard}>
           <Text style={styles.sectionTitle}>Prepared Local Frame</Text>
           <Image source={{ uri: preparedImage.uri }} style={styles.preview} />
-          <Text style={styles.muted}>Processed as a 320x320 JPEG frame for the local engine first.</Text>
+          <Text style={styles.muted}>
+            Processed as a {RECOGNITION_CAPTURE_SIZE}x{RECOGNITION_CAPTURE_SIZE} fast JPEG frame for the local
+            engine first.
+          </Text>
         </View>
       ) : null}
 
@@ -195,6 +324,20 @@ const styles = StyleSheet.create({
   },
   controls: {
     gap: 10,
+  },
+  livenessBox: {
+    backgroundColor: "#ECFDF5",
+    borderColor: "#BBF7D0",
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: 14,
+  },
+  livenessText: {
+    color: "#166534",
+    fontSize: 14,
+    fontWeight: "900",
+    lineHeight: 20,
+    textAlign: "center",
   },
   muted: {
     color: "#64748B",

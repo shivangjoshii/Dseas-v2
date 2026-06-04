@@ -7,6 +7,40 @@ export type RgbImage = {
   data: Uint8ClampedArray;
 };
 
+type ResizeIndexMap = {
+  xOffsets: Int32Array;
+  yOffsets: Int32Array;
+};
+
+const resizeIndexCache = new Map<string, ResizeIndexMap>();
+
+function getResizeIndexMap(width: number, height: number, size: number): ResizeIndexMap {
+  const cacheKey = `${width}x${height}->${size}`;
+  const cached = resizeIndexCache.get(cacheKey);
+
+  if (cached) {
+    return cached;
+  }
+
+  const xOffsets = new Int32Array(size);
+  const yOffsets = new Int32Array(size);
+
+  for (let x = 0; x < size; x += 1) {
+    const sourceX = Math.min(width - 1, Math.round((x / Math.max(1, size - 1)) * (width - 1)));
+    xOffsets[x] = sourceX * 4;
+  }
+
+  for (let y = 0; y < size; y += 1) {
+    const sourceY = Math.min(height - 1, Math.round((y / Math.max(1, size - 1)) * (height - 1)));
+    yOffsets[y] = sourceY * width * 4;
+  }
+
+  const indexMap = { xOffsets, yOffsets };
+  resizeIndexCache.set(cacheKey, indexMap);
+
+  return indexMap;
+}
+
 export function decodeJpegBase64(base64: string): RgbImage {
   const cleanBase64 = base64.includes(",") ? base64.split(",", 2)[1] : base64;
   const binary = decodeBase64(cleanBase64);
@@ -34,12 +68,13 @@ export function decodeJpegBase64(base64: string): RgbImage {
 export function imageToNchwTensor(image: RgbImage, size: number) {
   const tensor = new Float32Array(1 * 3 * size * size);
   const area = size * size;
+  const { xOffsets, yOffsets } = getResizeIndexMap(image.width, image.height, size);
 
   for (let y = 0; y < size; y += 1) {
+    const sourceRowOffset = yOffsets[y];
+
     for (let x = 0; x < size; x += 1) {
-      const sourceX = Math.min(image.width - 1, Math.round((x / Math.max(1, size - 1)) * (image.width - 1)));
-      const sourceY = Math.min(image.height - 1, Math.round((y / Math.max(1, size - 1)) * (image.height - 1)));
-      const sourceIndex = (sourceY * image.width + sourceX) * 4;
+      const sourceIndex = sourceRowOffset + xOffsets[x];
       const targetIndex = y * size + x;
 
       tensor[targetIndex] = (image.data[sourceIndex] - 127.5) / 128;

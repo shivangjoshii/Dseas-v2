@@ -9,14 +9,14 @@ export default function NotificationsScreen() {
     <SafeAreaView edges={["bottom"]} style={styles.screen}>
       <StatusBar backgroundColor="#0F172A" barStyle="light-content" />
       <View style={styles.emptyState}>
-        {/* <View style={styles.animationCard}>
+        <View style={styles.animationCard}>
           <LottieView
             autoPlay
             loop
             source={emptyNotificationsAnimation}
             style={styles.animation}
           />
-        </View> */}
+        </View>
         <View style={styles.copy}>
           <Text style={styles.title}>No notifications yet</Text>
           <Text style={styles.subtitle}>

@@ -4,19 +4,41 @@ import { CameraView, type CameraCapturedPicture, type CameraType, useCameraPermi
 
 import { ActionButton } from "@/components/ActionButton";
 import { withTimeout } from "@/services/async/withTimeout";
+import { pickRealtimePictureSize } from "@/services/camera/pictureSize";
 import { OnDeviceFaceEngine } from "@/services/face/onDeviceFaceEngine";
 import type { FaceDetectionResult, FaceRecognitionResult } from "@/services/face/types";
 import { prepareFaceImageAsync } from "@/services/image/prepareFaceImage";
 
 const FRAME_SIZE = 320;
-const LIVE_FRAME_DELAY_MS = 60;
-const OVERLAY_ANIMATION_MS = 260;
+const LIVE_CAPTURE_SIZE = 256;
+const LIVE_FRAME_DELAY_MS = 0;
 const NO_FACE_GRACE_MS = 1200;
-const STATUS_UPDATE_MS = 1200;
+const STATUS_UPDATE_MS = 650;
 const DETECTION_TIMEOUT_MS = 1200;
-const RECOGNITION_TIMEOUT_MS = 2800;
-const RECOGNITION_INTERVAL_MS = 2000;
-const MAX_LIVE_DETECTIONS = 3;
+const RECOGNITION_TIMEOUT_MS = 1400;
+const RECOGNITION_INTERVAL_MS = 500;
+const MAX_LIVE_DETECTIONS = 1;
+const OVERLAY_SMOOTHING_ALPHA = 0.46;
+const MAX_PREDICTION_MS = 130;
+const MAX_PREDICTION_GAIN = 0.38;
+const HEAD_TURN_RANGE_THRESHOLD = 0.075;
+const ACTIVE_LIVENESS_MIN_SAMPLES = 3;
+
+type ActiveLivenessTracker = {
+  maxYaw: number | null;
+  minYaw: number | null;
+  samples: number;
+  verified: boolean;
+};
+
+function createActiveLivenessTracker(): ActiveLivenessTracker {
+  return {
+    maxYaw: null,
+    minYaw: null,
+    samples: 0,
+    verified: false,
+  };
+}
 
 function toPercent(value: number): DimensionValue {
   return `${Math.max(0, Math.min(100, (value / FRAME_SIZE) * 100))}%` as DimensionValue;
@@ -24,10 +46,6 @@ function toPercent(value: number): DimensionValue {
 
 function lerp(start: number, end: number, progress: number) {
   return start + (end - start) * progress;
-}
-
-function easeOutCubic(progress: number) {
-  return 1 - Math.pow(1 - progress, 3);
 }
 
 function resultKey(result: FaceRecognitionResult, index: number) {
@@ -119,14 +137,77 @@ function blendResults(fromResults: FaceRecognitionResult[], toResults: FaceRecog
   });
 }
 
-function RecognitionOverlay({ results }: { results: FaceRecognitionResult[] }) {
+function clampFrame(value: number) {
+  return Math.max(0, Math.min(FRAME_SIZE, value));
+}
+
+function predictResult(
+  current: FaceRecognitionResult,
+  previous: FaceRecognitionResult | undefined,
+  elapsedMs: number,
+  deltaMs: number,
+): FaceRecognitionResult {
+  if (!previous || deltaMs <= 0) {
+    return current;
+  }
+
+  const predictionGain = Math.min(MAX_PREDICTION_GAIN, Math.min(elapsedMs, MAX_PREDICTION_MS) / deltaMs);
+
+  return {
+    ...current,
+    bbox: current.bbox.map((value, index) => clampFrame(value + (value - previous.bbox[index]) * predictionGain)) as FaceRecognitionResult["bbox"],
+    landmarks: current.landmarks.map((landmark, index) => {
+      const previousLandmark = previous.landmarks[index] ?? landmark;
+
+      return [
+        clampFrame(landmark[0] + (landmark[0] - previousLandmark[0]) * predictionGain),
+        clampFrame(landmark[1] + (landmark[1] - previousLandmark[1]) * predictionGain),
+      ];
+    }),
+  };
+}
+
+function predictResults(
+  currentResults: FaceRecognitionResult[],
+  previousResults: FaceRecognitionResult[],
+  elapsedMs: number,
+  deltaMs: number,
+) {
+  return currentResults.map((current, index) => {
+    const key = resultKey(current, index);
+    const previous =
+      previousResults.find((candidate, candidateIndex) => resultKey(candidate, candidateIndex) === key) ??
+      previousResults[index];
+
+    return predictResult(current, previous, elapsedMs, deltaMs);
+  });
+}
+
+function estimateHeadYaw(result: FaceDetectionResult) {
+  if (result.landmarks.length < 3) {
+    return 0;
+  }
+
+  const [leftEye, rightEye, nose] = result.landmarks;
+  const [top, right, bottom, left] = result.bbox;
+  const faceWidth = Math.max(1, right - left);
+  const eyeCenterX = (leftEye[0] + rightEye[0]) / 2;
+  const verticalPenalty = Math.max(1, bottom - top) / faceWidth;
+
+  return ((nose[0] - eyeCenterX) / faceWidth) * verticalPenalty;
+}
+
+function RecognitionOverlay({ activeLivenessVerified, mirrored, results }: { activeLivenessVerified: boolean; mirrored: boolean; results: FaceRecognitionResult[] }) {
   return (
     <View pointerEvents="none" style={styles.overlay}>
       {results.map((result, resultIndex) => {
         const [top, right, bottom, left] = result.bbox;
         const isKnown = result.person_id !== "unknown";
-        const color = isKnown ? "#22C55E" : "#F59E0B";
-        const label = `${result.name || "Unknown"} (${(result.score * 100).toFixed(1)}%)`;
+        const isLiveFace = result.liveness_verified !== false && activeLivenessVerified;
+        const displayLeft = mirrored ? FRAME_SIZE - right : left;
+        const color = !activeLivenessVerified ? "#1677FF" : isKnown ? "#22C55E" : "#F59E0B";
+        const livenessLabel = activeLivenessVerified ? "live" : "turn head";
+        const label = `${result.name || "Unknown"} - ${livenessLabel} (${(result.score * 100).toFixed(1)}%)`;
 
         return (
           <View
@@ -136,9 +217,10 @@ function RecognitionOverlay({ results }: { results: FaceRecognitionResult[] }) {
               {
                 borderColor: color,
                 height: toPercent(bottom - top),
-                left: toPercent(left),
+                left: toPercent(displayLeft),
                 top: toPercent(top),
                 width: toPercent(right - left),
+                opacity: isLiveFace ? 1 : 0.94,
               },
             ]}
           >
@@ -156,8 +238,8 @@ function RecognitionOverlay({ results }: { results: FaceRecognitionResult[] }) {
             style={[
               styles.landmark,
               {
-                backgroundColor: isKnown ? "#EF4444" : "#FFFFFF",
-                left: toPercent(x),
+                backgroundColor: !activeLivenessVerified ? "#1677FF" : isKnown ? "#22C55E" : "#FFFFFF",
+                left: toPercent(mirrored ? FRAME_SIZE - x : x),
                 top: toPercent(y),
               },
             ]}
@@ -174,24 +256,36 @@ export default function DetectScreen() {
   const [permission, requestPermission] = useCameraPermissions();
   const [facing, setFacing] = useState<CameraType>("front");
   const [cameraReady, setCameraReady] = useState(false);
+  const [pictureSize, setPictureSize] = useState<string | undefined>();
   const [isLive, setIsLive] = useState(true);
   const [status, setStatus] = useState("Starting local live face detection...");
   const [liveMeta, setLiveMeta] = useState({
-    engine: "Local detector",
+    engine: "Local detector + liveness",
     faces: 0,
+    liveness: "turn head left/right",
     recognition: "warming up",
   });
   const [results, setResults] = useState<FaceRecognitionResult[]>([]);
-  const animationFrameRef = useRef<number | null>(null);
+  const overlayFrameRef = useRef<number | null>(null);
   const displayedResultsRef = useRef<FaceRecognitionResult[]>([]);
+  const previousTargetResultsRef = useRef<FaceRecognitionResult[]>([]);
+  const previousTargetAtRef = useRef(0);
+  const targetResultsRef = useRef<FaceRecognitionResult[]>([]);
+  const targetAtRef = useRef(0);
   const latestRecognitionsRef = useRef<FaceRecognitionResult[]>([]);
   const recognitionInFlightRef = useRef(false);
   const lastRecognitionAtRef = useRef(0);
   const recognitionStatusRef = useRef("warming up");
   const noFaceSinceRef = useRef<number | null>(null);
   const lastStatusAtRef = useRef(0);
+  const activeLivenessRef = useRef(createActiveLivenessTracker());
+  const [activeLivenessVerified, setActiveLivenessVerified] = useState(false);
 
   const setRecognitionStatus = useCallback((recognition: string) => {
+    if (recognitionStatusRef.current === recognition) {
+      return;
+    }
+
     recognitionStatusRef.current = recognition;
     setLiveMeta((current) => ({
       ...current,
@@ -199,34 +293,103 @@ export default function DetectScreen() {
     }));
   }, []);
 
-  const animateOverlayTo = useCallback((targetResults: FaceRecognitionResult[]) => {
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
+  const updateActiveLiveness = useCallback((face: FaceDetectionResult | null) => {
+    if (!face) {
+      activeLivenessRef.current = createActiveLivenessTracker();
+      setActiveLivenessVerified(false);
+      return "show face";
     }
 
-    const startedAt = Date.now();
-    const sourceResults = displayedResultsRef.current;
+    const yaw = estimateHeadYaw(face);
+    const tracker = activeLivenessRef.current;
 
-    function step() {
-      const rawProgress = Math.min(1, (Date.now() - startedAt) / OVERLAY_ANIMATION_MS);
-      const easedProgress = easeOutCubic(rawProgress);
-      const nextResults = blendResults(sourceResults, targetResults, easedProgress);
+    tracker.samples += 1;
+    tracker.minYaw = tracker.minYaw === null ? yaw : Math.min(tracker.minYaw, yaw);
+    tracker.maxYaw = tracker.maxYaw === null ? yaw : Math.max(tracker.maxYaw, yaw);
 
-      displayedResultsRef.current = nextResults;
-      setResults(nextResults);
+    const yawRange = tracker.maxYaw - tracker.minYaw;
+    const verified = tracker.samples >= ACTIVE_LIVENESS_MIN_SAMPLES && yawRange >= HEAD_TURN_RANGE_THRESHOLD;
 
-      if (rawProgress < 1) {
-        animationFrameRef.current = requestAnimationFrame(step);
-      } else {
-        displayedResultsRef.current = targetResults;
-        setResults(targetResults);
-        animationFrameRef.current = null;
+    if (verified && !tracker.verified) {
+      tracker.verified = true;
+      setActiveLivenessVerified(true);
+    }
+
+    if (tracker.verified) {
+      return "active live verified";
+    }
+
+    return yaw < 0 ? "turn head right" : "turn head left";
+  }, []);
+
+  const updateOverlayTo = useCallback((targetResults: FaceRecognitionResult[]) => {
+    previousTargetResultsRef.current = targetResultsRef.current;
+    previousTargetAtRef.current = targetAtRef.current;
+    targetResultsRef.current = targetResults;
+    targetAtRef.current = Date.now();
+
+    if (targetResults.length === 0) {
+      displayedResultsRef.current = [];
+      setResults([]);
+    }
+  }, []);
+
+  const configureFastPictureSize = useCallback(async () => {
+    try {
+      const availableSizes = await cameraRef.current?.getAvailablePictureSizesAsync();
+      const fastSize = pickRealtimePictureSize(availableSizes ?? []);
+
+      if (fastSize) {
+        setPictureSize(fastSize);
+      }
+    } catch {
+      setPictureSize(undefined);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isLive) {
+      return;
+    }
+
+    let cancelled = false;
+
+    function tick() {
+      const targetResults = targetResultsRef.current;
+
+      if (targetResults.length > 0) {
+        const now = Date.now();
+        const predictedResults = predictResults(
+          targetResults,
+          previousTargetResultsRef.current,
+          now - targetAtRef.current,
+          targetAtRef.current - previousTargetAtRef.current,
+        );
+        const nextResults =
+          displayedResultsRef.current.length > 0
+            ? blendResults(displayedResultsRef.current, predictedResults, OVERLAY_SMOOTHING_ALPHA)
+            : predictedResults;
+
+        displayedResultsRef.current = nextResults;
+        setResults(nextResults);
+      }
+
+      if (!cancelled) {
+        overlayFrameRef.current = requestAnimationFrame(tick);
       }
     }
 
-    animationFrameRef.current = requestAnimationFrame(step);
-  }, []);
+    overlayFrameRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      cancelled = true;
+
+      if (overlayFrameRef.current) {
+        cancelAnimationFrame(overlayFrameRef.current);
+        overlayFrameRef.current = null;
+      }
+    };
+  }, [isLive]);
 
   useEffect(() => {
     if (!permission?.granted || !cameraReady) {
@@ -258,7 +421,7 @@ export default function DetectScreen() {
     let cancelled = false;
     let timeout: ReturnType<typeof setTimeout> | null = null;
 
-    function maybeRefreshRecognition(imageBase64: string) {
+    function maybeRefreshRecognition(imageBase64: string, detection: FaceRecognitionResult) {
       if (recognitionInFlightRef.current || Date.now() - lastRecognitionAtRef.current < RECOGNITION_INTERVAL_MS) {
         return;
       }
@@ -268,7 +431,7 @@ export default function DetectScreen() {
       setRecognitionStatus("updating");
 
       void withTimeout(
-        localEngineRef.current.recognizePrimary({ imageBase64 }),
+        localEngineRef.current.recognizeDetectedPrimary({ detection, imageBase64, maxFaces: 1 }),
         RECOGNITION_TIMEOUT_MS,
         "Local recognition timed out",
       )
@@ -303,9 +466,9 @@ export default function DetectScreen() {
       try {
         const startTime = Date.now();
         const photo = (await cameraRef.current.takePictureAsync({
-          quality: 0.35,
+          quality: 0.18,
           shutterSound: false,
-          skipProcessing: false,
+          skipProcessing: true,
         })) as CameraCapturedPicture | undefined;
 
         if (!photo) {
@@ -313,13 +476,14 @@ export default function DetectScreen() {
         }
 
         const prepared = await prepareFaceImageAsync(photo, {
-          compress: 0.35,
-          size: FRAME_SIZE,
+          compress: 0.2,
+          size: LIVE_CAPTURE_SIZE,
         });
         const detection = await withTimeout(
           localEngineRef.current.detect({
             imageBase64: prepared.base64,
             confidenceThreshold: 0.55,
+            livenessMode: "passive",
             maxDetections: MAX_LIVE_DETECTIONS,
           }),
           DETECTION_TIMEOUT_MS,
@@ -329,22 +493,31 @@ export default function DetectScreen() {
         if (!cancelled) {
           const displayResults = attachCachedRecognitionLabels(detection.detections, latestRecognitionsRef.current);
           const hasFaces = displayResults.length > 0;
+          let livenessStatus = activeLivenessRef.current.verified ? "active live verified" : "turn head left/right";
 
           if (hasFaces) {
             noFaceSinceRef.current = null;
-            animateOverlayTo(displayResults);
-            maybeRefreshRecognition(prepared.base64);
+            livenessStatus = updateActiveLiveness(displayResults[0]);
+            updateOverlayTo(displayResults);
+
+            if (activeLivenessRef.current.verified) {
+              maybeRefreshRecognition(prepared.base64, displayResults[0]);
+            } else {
+              setRecognitionStatus("waiting liveness");
+            }
           } else {
             noFaceSinceRef.current ??= Date.now();
 
             if (Date.now() - noFaceSinceRef.current > NO_FACE_GRACE_MS) {
-              animateOverlayTo([]);
+              livenessStatus = updateActiveLiveness(null);
+              updateOverlayTo([]);
             }
           }
 
           setLiveMeta({
-            engine: "Local detector",
+            engine: "Local detector + liveness",
             faces: displayResults.length,
+            liveness: livenessStatus,
             recognition: recognitionStatusRef.current,
           });
 
@@ -353,7 +526,7 @@ export default function DetectScreen() {
             setStatus(
               `Local detect | ${displayResults.length} face${displayResults.length === 1 ? "" : "s"} | ${
                 Date.now() - startTime
-              }ms | recognition ${recognitionStatusRef.current}`,
+              }ms | liveness ${livenessStatus}`,
             );
           }
         }
@@ -379,20 +552,23 @@ export default function DetectScreen() {
         clearTimeout(timeout);
       }
 
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
-      }
     };
-  }, [animateOverlayTo, cameraReady, isLive, permission?.granted, setRecognitionStatus]);
+  }, [cameraReady, isLive, permission?.granted, setRecognitionStatus, updateActiveLiveness, updateOverlayTo]);
 
   function switchCamera() {
     setCameraReady(false);
+    setPictureSize(undefined);
     displayedResultsRef.current = [];
+    previousTargetResultsRef.current = [];
+    previousTargetAtRef.current = 0;
+    targetResultsRef.current = [];
+    targetAtRef.current = 0;
     latestRecognitionsRef.current = [];
     recognitionInFlightRef.current = false;
     lastRecognitionAtRef.current = 0;
     noFaceSinceRef.current = null;
+    activeLivenessRef.current = createActiveLivenessTracker();
+    setActiveLivenessVerified(false);
     setRecognitionStatus("warming up");
     setResults([]);
     setStatus("Switching camera...");
@@ -423,11 +599,13 @@ export default function DetectScreen() {
           facing={facing}
           onCameraReady={() => {
             setCameraReady(true);
+            void configureFastPictureSize();
             setStatus(isLive ? "Camera ready. Loading local model..." : "Camera ready.");
           }}
+          pictureSize={pictureSize}
           style={styles.camera}
         />
-        <RecognitionOverlay results={results} />
+        <RecognitionOverlay activeLivenessVerified={activeLivenessVerified} mirrored={facing === "front"} results={results} />
       </View>
 
       <View style={styles.controls}>
@@ -449,9 +627,9 @@ export default function DetectScreen() {
           {liveMeta.engine} | {liveMeta.faces} face{liveMeta.faces === 1 ? "" : "s"} | recognition{" "}
           {liveMeta.recognition}
         </Text>
+        <Text style={styles.livenessText}>Liveness: {liveMeta.liveness}</Text>
         <Text style={styles.muted}>
-          Live frames stay local on the phone. Detection runs frequently; heavier identity recognition runs separately
-          and reuses the latest secure local match.
+          Turn your head slightly left and right. Frames stay offline; recognition starts only after active liveness passes.
         </Text>
       </View>
     </ScrollView>
@@ -524,6 +702,12 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     gap: 8,
     padding: 16,
+  },
+  livenessText: {
+    color: "#1677FF",
+    fontSize: 14,
+    fontWeight: "900",
+    lineHeight: 20,
   },
   muted: {
     color: "#64748B",
