@@ -10,19 +10,20 @@ import type { FaceDetectionResult, FaceRecognitionResult } from "@/services/face
 import { prepareFaceImageAsync } from "@/services/image/prepareFaceImage";
 
 const FRAME_SIZE = 320;
-const LIVE_CAPTURE_SIZE = 256;
+const LIVE_CAPTURE_SIZE = 224;
 const LIVE_FRAME_DELAY_MS = 0;
 const NO_FACE_GRACE_MS = 1200;
 const STATUS_UPDATE_MS = 650;
 const DETECTION_TIMEOUT_MS = 1200;
 const RECOGNITION_TIMEOUT_MS = 1400;
-const RECOGNITION_INTERVAL_MS = 500;
+const RECOGNITION_INTERVAL_MS = 1200;
 const MAX_LIVE_DETECTIONS = 1;
-const OVERLAY_SMOOTHING_ALPHA = 0.46;
-const MAX_PREDICTION_MS = 130;
-const MAX_PREDICTION_GAIN = 0.38;
-const HEAD_TURN_RANGE_THRESHOLD = 0.075;
-const ACTIVE_LIVENESS_MIN_SAMPLES = 3;
+const MIN_OVERLAY_SMOOTHING_ALPHA = 0.62;
+const MAX_OVERLAY_SMOOTHING_ALPHA = 0.9;
+const MAX_PREDICTION_MS = 320;
+const MAX_PREDICTION_GAIN = 0.82;
+const HEAD_TURN_RANGE_THRESHOLD = 0.06;
+const ACTIVE_LIVENESS_MIN_SAMPLES = 2;
 
 type ActiveLivenessTracker = {
   maxYaw: number | null;
@@ -135,6 +136,55 @@ function blendResults(fromResults: FaceRecognitionResult[], toResults: FaceRecog
 
     return blendResult(fromResult, toResult, progress);
   });
+}
+
+function bboxCenter(result: FaceRecognitionResult) {
+  const [top, right, bottom, left] = result.bbox;
+
+  return {
+    height: bottom - top,
+    width: right - left,
+    x: (left + right) / 2,
+    y: (top + bottom) / 2,
+  };
+}
+
+function getOverlayBlendAlpha(fromResults: FaceRecognitionResult[], toResults: FaceRecognitionResult[]) {
+  if (fromResults.length === 0 || toResults.length === 0) {
+    return MAX_OVERLAY_SMOOTHING_ALPHA;
+  }
+
+  let maxMotion = 0;
+
+  for (let index = 0; index < toResults.length; index += 1) {
+    const toResult = toResults[index];
+    const key = resultKey(toResult, index);
+    const fromResult =
+      fromResults.find((candidate, candidateIndex) => resultKey(candidate, candidateIndex) === key) ??
+      fromResults[index];
+
+    if (!fromResult) {
+      maxMotion = Math.max(maxMotion, 48);
+      continue;
+    }
+
+    const fromCenter = bboxCenter(fromResult);
+    const toCenter = bboxCenter(toResult);
+    const centerMotion = Math.hypot(toCenter.x - fromCenter.x, toCenter.y - fromCenter.y);
+    const sizeMotion = Math.abs(toCenter.width - fromCenter.width) + Math.abs(toCenter.height - fromCenter.height);
+
+    maxMotion = Math.max(maxMotion, centerMotion + sizeMotion * 0.35);
+  }
+
+  if (maxMotion > 42) {
+    return MAX_OVERLAY_SMOOTHING_ALPHA;
+  }
+
+  if (maxMotion > 18) {
+    return 0.78;
+  }
+
+  return MIN_OVERLAY_SMOOTHING_ALPHA;
 }
 
 function clampFrame(value: number) {
@@ -367,7 +417,11 @@ export default function DetectScreen() {
         );
         const nextResults =
           displayedResultsRef.current.length > 0
-            ? blendResults(displayedResultsRef.current, predictedResults, OVERLAY_SMOOTHING_ALPHA)
+            ? blendResults(
+                displayedResultsRef.current,
+                predictedResults,
+                getOverlayBlendAlpha(displayedResultsRef.current, predictedResults),
+              )
             : predictedResults;
 
         displayedResultsRef.current = nextResults;
@@ -466,7 +520,7 @@ export default function DetectScreen() {
       try {
         const startTime = Date.now();
         const photo = (await cameraRef.current.takePictureAsync({
-          quality: 0.18,
+          quality: 0.14,
           shutterSound: false,
           skipProcessing: true,
         })) as CameraCapturedPicture | undefined;
@@ -476,7 +530,7 @@ export default function DetectScreen() {
         }
 
         const prepared = await prepareFaceImageAsync(photo, {
-          compress: 0.2,
+          compress: 0.16,
           size: LIVE_CAPTURE_SIZE,
         });
         const detection = await withTimeout(
@@ -594,7 +648,6 @@ export default function DetectScreen() {
       <View style={styles.cameraFrame}>
         <CameraView
           animateShutter={false}
-          key={facing}
           ref={cameraRef}
           facing={facing}
           onCameraReady={() => {

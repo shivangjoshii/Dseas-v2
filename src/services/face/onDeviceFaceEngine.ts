@@ -241,6 +241,7 @@ async function detectionToResult(
 export class OnDeviceFaceEngine implements FaceEngine {
   async health(): Promise<HealthResponse> {
     await loadRuntime();
+    void getLocalFaceEmbeddingDatabase();
 
     return {
       status: "ok",

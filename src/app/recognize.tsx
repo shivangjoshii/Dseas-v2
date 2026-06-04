@@ -13,10 +13,10 @@ import type { FaceDetectionResult, FaceRecognitionResult } from "@/services/face
 import { prepareFaceImageAsync, type PreparedFaceImage } from "@/services/image/prepareFaceImage";
 import { saveAttendanceRecord } from "@/services/storage/database";
 
-const RECOGNITION_CAPTURE_SIZE = 256;
+const RECOGNITION_CAPTURE_SIZE = 224;
 const ACTIVE_HEAD_TURN_THRESHOLD = 0.075;
-const ACTIVE_LIVENESS_FRAMES = 3;
-const ACTIVE_LIVENESS_DELAY_MS = 140;
+const ACTIVE_LIVENESS_FRAMES = 2;
+const ACTIVE_LIVENESS_DELAY_MS = 110;
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -57,7 +57,7 @@ export default function RecognizeScreen() {
     }
 
     const photo = (await cameraRef.current.takePictureAsync({
-      quality: 0.24,
+      quality: 0.18,
       shutterSound: false,
       skipProcessing: true,
     })) as CameraCapturedPicture | undefined;
@@ -67,7 +67,7 @@ export default function RecognizeScreen() {
     }
 
     return prepareFaceImageAsync(photo, {
-      compress: 0.24,
+      compress: 0.18,
       size: RECOGNITION_CAPTURE_SIZE,
     });
   }

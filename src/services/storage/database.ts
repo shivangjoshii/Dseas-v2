@@ -44,7 +44,7 @@ let faceEmbeddingDatabaseCache:
     }
   | null = null;
 
-const FACE_EMBEDDING_CACHE_TTL_MS = 30000;
+const FACE_EMBEDDING_CACHE_TTL_MS = 5 * 60 * 1000;
 
 export async function getFaceDatabase() {
   if (!databasePromise) {
