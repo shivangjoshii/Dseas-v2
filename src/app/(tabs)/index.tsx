@@ -167,7 +167,7 @@ export default function Index() {
 
   function openRecognize() {
     router.push({
-      pathname: "/recognize",
+      pathname: "/detect",
       params: { apiBaseUrl: normalizeApiBaseUrl(apiBaseUrl) },
     } as never);
   }
@@ -240,8 +240,8 @@ export default function Index() {
             <AppIcon android="person_search" color="#1677FF" fallback="ID" ios="person.crop.circle.badge.checkmark" size={28} />
           </View>
           <View style={styles.recognizeCopy}>
-            <Text style={styles.recognizeTitle}>Recognition & Mark</Text>
-            <Text style={styles.recognizeSubtitle}>Identify enrolled faces and mark attendance securely.</Text>
+            <Text style={styles.recognizeTitle}>Detect & Mark</Text>
+            <Text style={styles.recognizeSubtitle}>Identify enrolled faces and mark Presence securely.</Text>
           </View>
           <AppIcon android="chevron_right" color="#1677FF" fallback=">" ios="chevron.right" size={24} />
         </Pressable>

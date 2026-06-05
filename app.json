@@ -1,21 +1,21 @@
 {
   "expo": {
-    "name": "dseas-v2",
-    "slug": "dseas-v2",
+    "name": "NHAI-DSEAS",
+    "slug": "NHAI-DSEAS",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/app-icon.png",
     "scheme": "dseasv2",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/images/app-icon.png"
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "foregroundImage": "./assets/images/app-icon.png",
+        "backgroundImage": "./assets/images/app-icon.png",
+        "monochromeImage": "./assets/images/app-icon.png"
       },
       "predictiveBackGestureEnabled": false,
       "permissions": [
@@ -32,17 +32,17 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow dseas-v2 to use the camera for face attendance verification.",
-          "microphonePermission": "Allow dseas-v2 to access the microphone.",
+          "cameraPermission": "Allow NHAI-DSEAS to use the camera for face attendance verification.",
+          "microphonePermission": "Allow NHAI-DSEAS to access the microphone.",
           "recordAudioAndroid": false
         }
       ],
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
+          "backgroundColor": "#FFFFFF",
           "android": {
-            "image": "./assets/images/splash-icon.png",
+            "image": "./assets/images/app-icon.png",
             "imageWidth": 76
           }
         }
