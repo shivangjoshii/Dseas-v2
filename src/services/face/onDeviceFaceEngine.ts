@@ -1,4 +1,5 @@
 import type * as Ort from "onnxruntime-react-native";
+import { NativeModules } from "react-native";
 
 import { withTimeout } from "@/services/async/withTimeout";
 import { buildFaceEmbeddingTensor } from "@/services/face/faceAlignment";
@@ -45,6 +46,7 @@ type LoadedRuntime = {
 };
 
 let runtimePromise: Promise<LoadedRuntime> | null = null;
+let runtimeOperationChain = Promise.resolve();
 const SESSION_LOAD_TIMEOUT_MS = 20000;
 const RUNTIME_LOAD_TIMEOUT_MS = 45000;
 const DEFAULT_DETECTION_CONFIDENCE = 0.5;
@@ -76,10 +78,22 @@ function resolveOrtRuntime(...candidates: unknown[]): OrtRuntimeApi {
   throw new Error("ONNX Runtime API unavailable. Rebuild the native dev app after installing onnxruntime-react-native.");
 }
 
+function assertOnnxRuntimeNativeModuleAvailable() {
+  const nativeModule = NativeModules.Onnxruntime as { install?: unknown } | null | undefined;
+  const alreadyInstalled = typeof (globalThis as { OrtApi?: unknown }).OrtApi !== "undefined";
+
+  if (!alreadyInstalled && typeof nativeModule?.install !== "function") {
+    throw new Error(
+      "On-device ONNX native module is not linked in this Android build. Rebuild the app after applying the native ONNX registration, or use backend fallback.",
+    );
+  }
+}
+
 async function loadRuntime() {
   if (!runtimePromise) {
     runtimePromise = withTimeout(
       (async () => {
+        assertOnnxRuntimeNativeModuleAvailable();
         const reactNativeOrt = await import("onnxruntime-react-native");
         const ort = resolveOrtRuntime(reactNativeOrt);
         const { detectorUri, embedderUri, livenessUri } = await getFaceModelUris();
@@ -89,23 +103,21 @@ async function loadRuntime() {
           interOpNumThreads: 1,
         };
 
-        const [detectorSession, embedderSession, livenessSession] = await Promise.all([
-          withTimeout(
-            ort.InferenceSession.create(detectorUri, sessionOptions),
-            SESSION_LOAD_TIMEOUT_MS,
-            "Detector ONNX session load timed out",
-          ),
-          withTimeout(
-            ort.InferenceSession.create(embedderUri, sessionOptions),
-            SESSION_LOAD_TIMEOUT_MS,
-            "Embedding ONNX session load timed out",
-          ),
-          withTimeout(
-            ort.InferenceSession.create(livenessUri, sessionOptions),
-            SESSION_LOAD_TIMEOUT_MS,
-            "MiniFASNet liveness ONNX session load timed out",
-          ),
-        ]);
+        const detectorSession = await withTimeout(
+          ort.InferenceSession.create(detectorUri, sessionOptions),
+          SESSION_LOAD_TIMEOUT_MS,
+          "Detector ONNX session load timed out",
+        );
+        const embedderSession = await withTimeout(
+          ort.InferenceSession.create(embedderUri, sessionOptions),
+          SESSION_LOAD_TIMEOUT_MS,
+          "Embedding ONNX session load timed out",
+        );
+        const livenessSession = await withTimeout(
+          ort.InferenceSession.create(livenessUri, sessionOptions),
+          SESSION_LOAD_TIMEOUT_MS,
+          "MiniFASNet liveness ONNX session load timed out",
+        );
 
         return {
           ort,
@@ -123,6 +135,20 @@ async function loadRuntime() {
   }
 
   return runtimePromise;
+}
+
+function runQueuedRuntimeOperation<T>(operation: (runtime: LoadedRuntime) => Promise<T>) {
+  const queuedOperation = runtimeOperationChain.then(
+    async () => operation(await loadRuntime()),
+    async () => operation(await loadRuntime()),
+  );
+
+  runtimeOperationChain = queuedOperation.then(
+    () => undefined,
+    () => undefined,
+  );
+
+  return queuedOperation;
 }
 
 function selectEnrollmentDetection(detections: Detection[]) {
@@ -250,199 +276,204 @@ export class OnDeviceFaceEngine implements FaceEngine {
   }
 
   async detect(request: DetectFaceRequest): Promise<DetectFaceResponse> {
-    const runtime = await loadRuntime();
-    const image = decodeJpegBase64(request.imageBase64);
-    const detections = await detectFaces(runtime, image, {
-      confidenceThreshold: request.confidenceThreshold,
-      maxDetections: request.maxDetections,
+    return runQueuedRuntimeOperation(async (runtime) => {
+      const image = decodeJpegBase64(request.imageBase64);
+      const detections = await detectFaces(runtime, image, {
+        confidenceThreshold: request.confidenceThreshold,
+        maxDetections: request.maxDetections,
+      });
+      const results: FaceDetectionResult[] = [];
+
+      for (const detection of detections) {
+        results.push(await detectionToResult(runtime, image, detection, request.livenessMode));
+      }
+
+      return {
+        success: true,
+        detections: results,
+        count: results.length,
+      };
     });
-    const results: FaceDetectionResult[] = [];
-
-    for (const detection of detections) {
-      results.push(await detectionToResult(runtime, image, detection, request.livenessMode));
-    }
-
-    return {
-      success: true,
-      detections: results,
-      count: results.length,
-    };
   }
 
   async recognizePrimary(request: RecognizeFaceRequest): Promise<RecognizeFaceResponse> {
-    const runtime = await loadRuntime();
-    const image = decodeJpegBase64(request.imageBase64);
-    const detections = await detectFaces(runtime, image, {
-      maxDetections: 1,
-    });
+    return runQueuedRuntimeOperation(async (runtime) => {
+      const image = decodeJpegBase64(request.imageBase64);
+      const detections = await detectFaces(runtime, image, {
+        maxDetections: 1,
+      });
 
-    if (detections.length === 0) {
-      return {
-        success: true,
-        results: [],
-        count: 0,
-      };
-    }
+      if (detections.length === 0) {
+        return {
+          success: true,
+          results: [],
+          count: 0,
+        };
+      }
 
-    const detection = selectEnrollmentDetection(detections);
-    const detectionResult = await detectionToResult(runtime, image, detection);
+      const detection = selectEnrollmentDetection(detections);
+      const detectionResult = await detectionToResult(runtime, image, detection);
 
-    if (detectionResult.liveness_verified === false) {
-      return {
-        success: true,
-        results: [
-          {
-            ...detectionResult,
-            person_id: "unknown",
-            name: "Liveness failed",
-            similarity: 0,
-          },
-        ],
-        count: 1,
-      };
-    }
+      if (detectionResult.liveness_verified === false) {
+        return {
+          success: true,
+          results: [
+            {
+              ...detectionResult,
+              person_id: "unknown",
+              name: "Liveness failed",
+              similarity: 0,
+            },
+          ],
+          count: 1,
+        };
+      }
 
-    const database = await getLocalFaceEmbeddingDatabase();
-    const embedding = await generateEmbedding(runtime, image, detection);
-    const match = findBestEmbeddingMatch(database, embedding, 0.45);
-    const results: FaceRecognitionResult[] = [
-      {
-        ...detectionResult,
-        person_id: match?.person_id ?? "unknown",
-        name: match?.name ?? "Unknown",
-        similarity: match?.similarity ?? 0,
-      },
-    ];
-
-    return {
-      success: true,
-      results,
-      count: results.length,
-    };
-  }
-
-  async recognizeDetectedPrimary(request: RecognizeFaceRequest & { detection: FaceDetectionResult }): Promise<RecognizeFaceResponse> {
-    const runtime = await loadRuntime();
-    const image = decodeJpegBase64(request.imageBase64);
-    const detection: Detection = {
-      bbox: request.detection.bbox,
-      landmarks: request.detection.landmarks,
-      score: request.detection.score,
-    };
-    const detectionResult = {
-      ...request.detection,
-      engine: "on-device" as const,
-      liveness_verified: request.detection.liveness_verified !== false,
-    };
-
-    if (detectionResult.liveness_verified === false) {
-      return {
-        success: true,
-        results: [
-          {
-            ...detectionResult,
-            person_id: "unknown",
-            name: "Liveness failed",
-            similarity: 0,
-          },
-        ],
-        count: 1,
-      };
-    }
-
-    const [database, embedding] = await Promise.all([
-      getLocalFaceEmbeddingDatabase(),
-      generateEmbedding(runtime, image, detection),
-    ]);
-    const match = findBestEmbeddingMatch(database, embedding, 0.45);
-
-    return {
-      success: true,
-      results: [
+      const database = await getLocalFaceEmbeddingDatabase();
+      const embedding = await generateEmbedding(runtime, image, detection);
+      const match = findBestEmbeddingMatch(database, embedding, 0.45);
+      const results: FaceRecognitionResult[] = [
         {
           ...detectionResult,
           person_id: match?.person_id ?? "unknown",
           name: match?.name ?? "Unknown",
           similarity: match?.similarity ?? 0,
         },
-      ],
-      count: 1,
-    };
+      ];
+
+      return {
+        success: true,
+        results,
+        count: results.length,
+      };
+    });
+  }
+
+  async recognizeDetectedPrimary(request: RecognizeFaceRequest & { detection: FaceDetectionResult }): Promise<RecognizeFaceResponse> {
+    return runQueuedRuntimeOperation(async (runtime) => {
+      const image = decodeJpegBase64(request.imageBase64);
+      const detection: Detection = {
+        bbox: request.detection.bbox,
+        landmarks: request.detection.landmarks,
+        score: request.detection.score,
+      };
+      const detectionResult = {
+        ...request.detection,
+        engine: "on-device" as const,
+        liveness_verified: request.detection.liveness_verified !== false,
+      };
+
+      if (detectionResult.liveness_verified === false) {
+        return {
+          success: true,
+          results: [
+            {
+              ...detectionResult,
+              person_id: "unknown",
+              name: "Liveness failed",
+              similarity: 0,
+            },
+          ],
+          count: 1,
+        };
+      }
+
+      const [database, embedding] = await Promise.all([
+        getLocalFaceEmbeddingDatabase(),
+        generateEmbedding(runtime, image, detection),
+      ]);
+      const match = findBestEmbeddingMatch(database, embedding, 0.45);
+
+      return {
+        success: true,
+        results: [
+          {
+            ...detectionResult,
+            person_id: match?.person_id ?? "unknown",
+            name: match?.name ?? "Unknown",
+            similarity: match?.similarity ?? 0,
+          },
+        ],
+        count: 1,
+      };
+    });
   }
 
   async enroll(request: EnrollFaceRequest): Promise<EnrollFaceResponse> {
-    const runtime = await loadRuntime();
-    const image = decodeJpegBase64(request.imageBase64);
-    const detections = await detectFaces(runtime, image, {
-      maxDetections: 1,
-    });
+    return runQueuedRuntimeOperation(async (runtime) => {
+      const image = decodeJpegBase64(request.imageBase64);
+      const detections = await detectFaces(runtime, image, {
+        maxDetections: 1,
+      });
 
-    if (detections.length === 0) {
-      return {
-        success: false,
-        error: "No face detected",
-      };
-    }
+      if (detections.length === 0) {
+        return {
+          success: false,
+          error: "No face detected",
+        };
+      }
 
-    const detection = selectEnrollmentDetection(detections);
-    const liveness = await runMiniFasNetLiveness(runtime, image, detection);
+      const detection = selectEnrollmentDetection(detections);
+      const liveness = await runMiniFasNetLiveness(runtime, image, detection);
 
-    if (!liveness.verified) {
-      return {
-        success: false,
-        error: liveness.reason,
-      };
-    }
-
-    const embedding = await generateEmbedding(runtime, image, detection);
-    const personId = request.personId || request.name;
-    await saveLocalFaceMetadata(personId, request.name, embedding);
-
-    return {
-      success: true,
-      person_id: personId,
-    };
-  }
-
-  async recognize(request: RecognizeFaceRequest): Promise<RecognizeFaceResponse> {
-    const runtime = await loadRuntime();
-    const image = decodeJpegBase64(request.imageBase64);
-    const detections = await detectFaces(runtime, image, {
-      maxDetections: request.maxFaces ?? 1,
-    });
-    let database: Awaited<ReturnType<typeof getLocalFaceEmbeddingDatabase>> | null = null;
-    const results: FaceRecognitionResult[] = [];
-
-    for (const detection of detections) {
-      const detectionResult = await detectionToResult(runtime, image, detection);
-
-      if (detectionResult.liveness_verified === false) {
-        results.push({
-          ...detectionResult,
-          person_id: "unknown",
-          name: "Liveness failed",
-          similarity: 0,
-        });
-        continue;
+      if (!liveness.verified) {
+        return {
+          success: false,
+          error: liveness.reason,
+        };
       }
 
       const embedding = await generateEmbedding(runtime, image, detection);
-      database ??= await getLocalFaceEmbeddingDatabase();
-      const match = findBestEmbeddingMatch(database, embedding, 0.45);
+      const personId = request.personId || request.name;
+      await saveLocalFaceMetadata(personId, request.name, embedding);
 
-      results.push({
-        ...detectionResult,
-        person_id: match?.person_id ?? "unknown",
-        name: match?.name ?? "Unknown",
-        similarity: match?.similarity ?? 0,
+      return {
+        success: true,
+        person_id: personId,
+      };
+    });
+  }
+
+  async recognize(request: RecognizeFaceRequest): Promise<RecognizeFaceResponse> {
+    return runQueuedRuntimeOperation(async (runtime) => {
+      const image = decodeJpegBase64(request.imageBase64);
+      const detections = await detectFaces(runtime, image, {
+        maxDetections: request.maxFaces ?? 1,
       });
-    }
+      let database: Awaited<ReturnType<typeof getLocalFaceEmbeddingDatabase>> | null = null;
+      const results: FaceRecognitionResult[] = [];
 
-    return {
-      success: true,
-      results,
-      count: results.length,
-    };
+      for (const detection of detections) {
+        const detectionResult = await detectionToResult(runtime, image, detection);
+
+        if (detectionResult.liveness_verified === false) {
+          results.push({
+            ...detectionResult,
+            person_id: "unknown",
+            name: "Liveness failed",
+            similarity: 0,
+          });
+          continue;
+        }
+
+        const embedding = await generateEmbedding(runtime, image, detection);
+        database ??= await getLocalFaceEmbeddingDatabase();
+        const match = findBestEmbeddingMatch(database, embedding, 0.45);
+
+        results.push({
+          ...detectionResult,
+          person_id: match?.person_id ?? "unknown",
+          name: match?.name ?? "Unknown",
+          similarity: match?.similarity ?? 0,
+        });
+      }
+
+      return {
+        success: true,
+        results,
+        count: results.length,
+      };
+    });
   }
 
   async logAttendance(request: AttendanceLogRequest): Promise<{ success: boolean; error?: string }> {

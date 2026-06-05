@@ -48,11 +48,18 @@
         }
       ],
       "expo-sqlite",
-      "onnxruntime-react-native"
+      "onnxruntime-react-native",
+      "./plugins/withOnnxruntimeAndroidFix"
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "571811dc-b2e6-43be-be20-69f423f4e890"
+      }
     }
   }
 }
