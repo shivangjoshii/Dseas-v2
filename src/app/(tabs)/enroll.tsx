@@ -8,12 +8,13 @@ import { ActionButton } from "@/components/ActionButton";
 import { FloatingSnackbar, type SnackbarState } from "@/components/FloatingSnackbar";
 import { withTimeout } from "@/services/async/withTimeout";
 import { DEFAULT_FACE_API_BASE_URL } from "@/services/config/faceBackend";
-import { BackendFaceEngine } from "@/services/face/backendFaceEngine";
-import { OnDeviceFaceEngine } from "@/services/face/onDeviceFaceEngine";
+import { BackendFaceEngine } from "@/services/face/engines/backendFaceEngine";
+import { OnDeviceFaceEngine } from "@/services/face/engines/onDeviceFaceEngine";
 import { prepareFaceImageAsync, type PreparedFaceImage } from "@/services/image/prepareFaceImage";
+import { generateUniqueId } from "@/services/face/utils/idUtils";
 import { saveLocalFaceMetadata } from "@/services/storage/database";
 
-const INITIAL_ENROLL_STATUS = "Enter a name, capture a clear face, and enroll.";
+const INITIAL_ENROLL_STATUS = "Capture a clear face to begin enrollment.";
 
 export default function EnrollScreen() {
   const params = useLocalSearchParams<{ apiBaseUrl?: string }>();
@@ -23,7 +24,6 @@ export default function EnrollScreen() {
   const [permission, requestPermission] = useCameraPermissions();
   const [facing, setFacing] = useState<CameraType>("front");
   const [name, setName] = useState("");
-  const [personId, setPersonId] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [status, setStatus] = useState(INITIAL_ENROLL_STATUS);
   const [preparedImage, setPreparedImage] = useState<PreparedFaceImage | null>(null);
@@ -35,7 +35,6 @@ export default function EnrollScreen() {
 
   const resetCompletedEnrollment = useCallback(() => {
     setName("");
-    setPersonId("");
     setPreparedImage(null);
     setStatus(INITIAL_ENROLL_STATUS);
     setSnackbar({ message: "", visible: false });
@@ -52,102 +51,87 @@ export default function EnrollScreen() {
     }, [resetCompletedEnrollment]),
   );
 
-  async function captureAndEnroll() {
-    if (!cameraRef.current || isProcessing) {
-      return;
-    }
-
-    if (!name.trim()) {
-      setStatus("Name is required for enrollment.");
-      showSnackbar("Name is required for enrollment.", "error");
-      return;
-    }
+  async function handleCapture() {
+    if (!cameraRef.current || isProcessing) return;
 
     setIsProcessing(true);
-    completedEnrollmentRef.current = false;
-    setStatus("Capturing enrollment frame...");
-
+    setStatus("Capturing face...");
     try {
-      const photo = (await cameraRef.current.takePictureAsync({
+      const photo = await cameraRef.current.takePictureAsync({
         quality: 0.72,
         skipProcessing: false,
-      })) as CameraCapturedPicture | undefined;
+      });
 
-      if (!photo) {
-        throw new Error("Camera did not return a picture");
-      }
+      if (!photo) throw new Error("Capture failed");
 
       const prepared = await prepareFaceImageAsync(photo);
       setPreparedImage(prepared);
-
-      setStatus("Running local enrollment engine...");
-      const enrollmentPayload = {
-        name: name.trim(),
-        personId: personId.trim() || undefined,
-        imageBase64: prepared.base64,
-      };
-      let localUnavailableError: unknown = null;
-
-      try {
-        const localResponse = await withTimeout(
-          new OnDeviceFaceEngine().enroll(enrollmentPayload),
-          12000,
-          "On-device enrollment timed out",
-        );
-
-        if (!localResponse.success) {
-          const message = localResponse.error || "Local enrollment failed";
-          setStatus(message);
-          showSnackbar(message, "error");
-          return;
-        }
-
-        const enrolledPersonId = localResponse.person_id ?? (personId.trim() || name.trim());
-        completedEnrollmentRef.current = true;
-        setStatus(`Enrolled ${name.trim()} locally as ${enrolledPersonId}. Attendance will sync from local queue.`);
-        showSnackbar(`Face enrolled locally: ${name.trim()}`, "success");
-        return;
-      } catch (localError) {
-        localUnavailableError = localError;
-      }
-
-      setStatus("Local engine could not run. Trying backend enrollment fallback...");
-      const backendResponse = await new BackendFaceEngine({ apiBaseUrl }).enroll(enrollmentPayload);
-
-      if (!backendResponse.success) {
-        throw new Error(backendResponse.error || "Backend enrollment failed");
-      }
-
-      await saveLocalFaceMetadata(
-        backendResponse.person_id ?? (personId.trim() || name.trim()),
-        name.trim(),
-        null,
-        { synced: true },
-      );
-      completedEnrollmentRef.current = true;
-      setStatus(
-        localUnavailableError instanceof Error
-          ? `Backend fallback enrolled ${name.trim()}. Local embedding unavailable: ${localUnavailableError.message}`
-          : `Backend fallback enrolled ${name.trim()}. Local embedding unavailable in this build.`,
-      );
-      showSnackbar("Face enrolled using backend fallback.", "success");
+      setStatus("Face captured. Enter name and enroll.");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Enrollment failed");
-      showSnackbar(error instanceof Error ? error.message : "Enrollment failed", "error");
+      const msg = error instanceof Error ? error.message : "Capture failed";
+      setStatus(msg);
+      showSnackbar(msg, "error");
     } finally {
       setIsProcessing(false);
     }
   }
 
-  if (!permission) {
-    return <View style={styles.center} />;
+  async function handleEnroll() {
+    if (!preparedImage || isProcessing) return;
+
+    if (!name.trim()) {
+      showSnackbar("Please enter a name", "error");
+      return;
+    }
+
+    setIsProcessing(true);
+    setStatus("Processing enrollment...");
+
+    try {
+      const personId = generateUniqueId("user");
+      const payload = {
+        name: name.trim(),
+        personId,
+        imageBase64: preparedImage.base64,
+      };
+
+      try {
+        const res = await withTimeout(
+          new OnDeviceFaceEngine().enroll(payload),
+          15000,
+          "Enrollment timed out"
+        );
+
+        if (!res.success) throw new Error(res.error || "Local enrollment failed");
+
+        completedEnrollmentRef.current = true;
+        setStatus(`Success! Enrolled ${name.trim()} (ID: ${personId})`);
+        showSnackbar(`Enrolled: ${name.trim()}`, "success");
+        return;
+      } catch (localError) {
+        // Fallback to backend if local fails
+        const backendRes = await new BackendFaceEngine({ apiBaseUrl }).enroll(payload);
+        if (!backendRes.success) throw new Error(backendRes.error || "Backend enrollment failed");
+
+        await saveLocalFaceMetadata(personId, name.trim(), null, { synced: true });
+        completedEnrollmentRef.current = true;
+        setStatus(`Enrolled ${name.trim()} via backend fallback`);
+        showSnackbar("Enrolled using backend", "success");
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "Enrollment failed";
+      setStatus(msg);
+      showSnackbar(msg, "error");
+    } finally {
+      setIsProcessing(false);
+    }
   }
 
+  if (!permission) return <View style={styles.center} />;
   if (!permission.granted) {
     return (
       <View style={styles.center}>
-        <Text style={styles.permissionTitle}>Camera permission needed</Text>
-        <Text style={styles.permissionText}>Enrollment needs camera access to capture a face image.</Text>
+        <Text style={styles.permissionTitle}>Camera access required</Text>
         <ActionButton onPress={requestPermission} title="Allow Camera" />
       </View>
     );
@@ -158,50 +142,58 @@ export default function EnrollScreen() {
       <StatusBar backgroundColor="#0F172A" barStyle="light-content" />
       <SafeAreaView edges={["top"]} style={styles.standardAppBarSafeArea}>
         <View style={styles.standardAppBar}>
-          <Text style={styles.standardAppBarTitle}>Enroll</Text>
+          <Text style={styles.standardAppBarTitle}>Face Enrollment</Text>
         </View>
       </SafeAreaView>
 
       <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
-      <View style={styles.formCard}>
-        <Text style={styles.label}>Name</Text>
-        <TextInput onChangeText={setName} placeholder="Person name" style={styles.input} value={name} />
-        <Text style={styles.label}>Person ID optional</Text>
-        <TextInput
-          autoCapitalize="none"
-          onChangeText={setPersonId}
-          placeholder="Defaults to name"
-          style={styles.input}
-          value={personId}
-        />
-      </View>
+        {!preparedImage ? (
+          <>
+            <View style={styles.cameraCard}>
+              <CameraView ref={cameraRef} facing={facing} style={styles.camera} />
+            </View>
+            <View style={styles.controls}>
+              <ActionButton disabled={isProcessing} onPress={handleCapture} title="Capture Face" />
+              <ActionButton
+                disabled={isProcessing}
+                onPress={() => setFacing((c) => (c === "front" ? "back" : "front"))}
+                title="Switch Camera"
+                variant="secondary"
+              />
+            </View>
+          </>
+        ) : (
+          <>
+            <View style={styles.previewCard}>
+              <Text style={styles.sectionTitle}>Review Capture</Text>
+              <Image source={{ uri: preparedImage.uri }} style={styles.preview} />
+            </View>
+            <View style={styles.formCard}>
+              <Text style={styles.label}>Full Name</Text>
+              <TextInput
+                autoFocus
+                onChangeText={setName}
+                placeholder="Enter person's name"
+                style={styles.input}
+                value={name}
+              />
+              <ActionButton disabled={isProcessing} onPress={handleEnroll} title="Confirm & Enroll" />
+              <ActionButton
+                disabled={isProcessing}
+                onPress={() => setPreparedImage(null)}
+                title="Retake Photo"
+                variant="secondary"
+              />
+            </View>
+          </>
+        )}
 
-      <View style={styles.cameraCard}>
-        <CameraView ref={cameraRef} facing={facing} style={styles.camera} />
-      </View>
-
-      <View style={styles.controls}>
-        <ActionButton disabled={isProcessing} onPress={captureAndEnroll} title="Capture & Enroll" />
-        <ActionButton
-          disabled={isProcessing}
-          onPress={() => setFacing((current) => (current === "front" ? "back" : "front"))}
-          title="Switch Camera"
-          variant="secondary"
-        />
-      </View>
-
-      <View style={styles.statusBox}>
-        {isProcessing ? <ActivityIndicator color="#1677FF" /> : null}
-        <Text style={styles.statusText}>{status}</Text>
-      </View>
-
-      {preparedImage ? (
-        <View style={styles.previewCard}>
-          <Text style={styles.sectionTitle}>Last Enrollment Frame</Text>
-          <Image source={{ uri: preparedImage.uri }} style={styles.preview} />
+        <View style={styles.statusBox}>
+          {isProcessing ? <ActivityIndicator color="#1677FF" style={{ marginRight: 8 }} /> : null}
+          <Text style={styles.statusText}>{status}</Text>
         </View>
-      ) : null}
       </ScrollView>
+
       <FloatingSnackbar
         message={snackbar.message}
         onDismiss={() => setSnackbar((current) => ({ ...current, visible: false }))}

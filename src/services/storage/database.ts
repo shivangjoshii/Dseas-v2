@@ -92,9 +92,14 @@ export async function getFaceDatabase() {
 export async function saveLocalFaceMetadata(
   personId: string,
   name: string,
-  embedding?: number[] | null,
-  options: { synced?: boolean } = {},
+  embedding: number[] | Float32Array | null,
+  options: { synced?: boolean; allowNoEmbedding?: boolean } = {},
 ) {
+  if (!name.trim()) throw new Error("Name is required for enrollment");
+  if (!embedding && !options.allowNoEmbedding) {
+    throw new Error("Face embedding is required for local recognition");
+  }
+
   const database = await getFaceDatabase();
   const timestamp = new Date().toISOString();
 
@@ -110,7 +115,7 @@ export async function saveLocalFaceMetadata(
     `,
     personId,
     name,
-    embedding ? JSON.stringify(embedding) : null,
+    embedding ? JSON.stringify(Array.from(embedding)) : null,
     timestamp,
     timestamp,
     options.synced ? 1 : 0,

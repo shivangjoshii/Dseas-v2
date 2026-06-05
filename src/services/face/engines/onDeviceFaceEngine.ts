@@ -1,16 +1,21 @@
-import type * as Ort from "onnxruntime-react-native";
-import { NativeModules } from "react-native";
-
-import { withTimeout } from "@/services/async/withTimeout";
-import { buildFaceEmbeddingTensor } from "@/services/face/faceAlignment";
-import { findBestEmbeddingMatch, l2Normalize } from "@/services/face/faceMath";
+import { buildFaceEmbeddingTensor } from "@/services/face/alignment/faceAlignment";
+import {
+  DETECTOR_INPUT_SIZE,
+  scaleDetection,
+  selectEnrollmentDetection,
+} from "@/services/face/detection/detectionUtils";
+import { decodeScrfdOutputs, type Detection } from "@/services/face/detection/scrfdDetector";
+import {
+  loadRuntime,
+  runQueuedRuntimeOperation,
+  type LoadedRuntime,
+} from "@/services/face/engines/ortRuntime";
+import { findBestEmbeddingMatch, l2Normalize } from "@/services/face/utils/faceMath";
 import {
   buildMiniFasNetLivenessTensor,
   runPassiveLivenessQualityCheck,
   scoreMiniFasNetLiveness,
-} from "@/services/face/liveness";
-import { getFaceModelUris } from "@/services/face/modelAssets";
-import { decodeScrfdOutputs, type Detection } from "@/services/face/scrfdDetector";
+} from "@/services/face/liveness/liveness";
 import type {
   AttendanceLogRequest,
   BackendAttendanceLog,
@@ -18,10 +23,8 @@ import type {
   DetectFaceResponse,
   EnrollFaceRequest,
   EnrollFaceResponse,
-  FaceBoundingBox,
   FaceEngine,
   FaceDetectionResult,
-  FaceLandmark,
   FaceRecognitionResult,
   HealthResponse,
   RecognizeFaceRequest,
@@ -34,131 +37,8 @@ import {
   saveLocalFaceMetadata,
 } from "@/services/storage/database";
 
-type OrtModule = typeof Ort;
-type OrtSession = Ort.InferenceSession;
-type OrtRuntimeApi = Pick<OrtModule, "InferenceSession" | "Tensor">;
-
-type LoadedRuntime = {
-  ort: OrtRuntimeApi;
-  detectorSession: OrtSession;
-  embedderSession: OrtSession;
-  livenessSession: OrtSession;
-};
-
-let runtimePromise: Promise<LoadedRuntime> | null = null;
-let runtimeOperationChain = Promise.resolve();
-const SESSION_LOAD_TIMEOUT_MS = 20000;
-const RUNTIME_LOAD_TIMEOUT_MS = 45000;
 const DEFAULT_DETECTION_CONFIDENCE = 0.5;
 const DEFAULT_MAX_DETECTIONS = 8;
-const DETECTOR_INPUT_SIZE = 320;
-
-function resolveOrtRuntime(...candidates: unknown[]): OrtRuntimeApi {
-  for (const candidate of candidates) {
-    const moduleCandidate = candidate as
-      | (Partial<OrtRuntimeApi> & {
-          default?: Partial<OrtRuntimeApi>;
-        })
-      | null
-      | undefined;
-    const runtime = moduleCandidate?.InferenceSession?.create
-      ? moduleCandidate
-      : moduleCandidate?.default?.InferenceSession?.create
-        ? moduleCandidate.default
-        : null;
-
-    if (runtime?.InferenceSession?.create && runtime.Tensor) {
-      return {
-        InferenceSession: runtime.InferenceSession,
-        Tensor: runtime.Tensor,
-      };
-    }
-  }
-
-  throw new Error("ONNX Runtime API unavailable. Rebuild the native dev app after installing onnxruntime-react-native.");
-}
-
-function assertOnnxRuntimeNativeModuleAvailable() {
-  const nativeModule = NativeModules.Onnxruntime as { install?: unknown } | null | undefined;
-  const alreadyInstalled = typeof (globalThis as { OrtApi?: unknown }).OrtApi !== "undefined";
-
-  if (!alreadyInstalled && typeof nativeModule?.install !== "function") {
-    throw new Error(
-      "On-device ONNX native module is not linked in this Android build. Rebuild the app after applying the native ONNX registration, or use backend fallback.",
-    );
-  }
-}
-
-async function loadRuntime() {
-  if (!runtimePromise) {
-    runtimePromise = withTimeout(
-      (async () => {
-        assertOnnxRuntimeNativeModuleAvailable();
-        const reactNativeOrt = await import("onnxruntime-react-native");
-        const ort = resolveOrtRuntime(reactNativeOrt);
-        const { detectorUri, embedderUri, livenessUri } = await getFaceModelUris();
-        const sessionOptions: Ort.InferenceSession.SessionOptions = {
-          graphOptimizationLevel: "basic",
-          intraOpNumThreads: 4,
-          interOpNumThreads: 1,
-        };
-
-        const detectorSession = await withTimeout(
-          ort.InferenceSession.create(detectorUri, sessionOptions),
-          SESSION_LOAD_TIMEOUT_MS,
-          "Detector ONNX session load timed out",
-        );
-        const embedderSession = await withTimeout(
-          ort.InferenceSession.create(embedderUri, sessionOptions),
-          SESSION_LOAD_TIMEOUT_MS,
-          "Embedding ONNX session load timed out",
-        );
-        const livenessSession = await withTimeout(
-          ort.InferenceSession.create(livenessUri, sessionOptions),
-          SESSION_LOAD_TIMEOUT_MS,
-          "MiniFASNet liveness ONNX session load timed out",
-        );
-
-        return {
-          ort,
-          detectorSession,
-          embedderSession,
-          livenessSession,
-        };
-      })(),
-      RUNTIME_LOAD_TIMEOUT_MS,
-      "On-device ONNX runtime load timed out",
-    ).catch((error) => {
-      runtimePromise = null;
-      throw error;
-    });
-  }
-
-  return runtimePromise;
-}
-
-function runQueuedRuntimeOperation<T>(operation: (runtime: LoadedRuntime) => Promise<T>) {
-  const queuedOperation = runtimeOperationChain.then(
-    async () => operation(await loadRuntime()),
-    async () => operation(await loadRuntime()),
-  );
-
-  runtimeOperationChain = queuedOperation.then(
-    () => undefined,
-    () => undefined,
-  );
-
-  return queuedOperation;
-}
-
-function selectEnrollmentDetection(detections: Detection[]) {
-  return [...detections].sort((left, right) => {
-    const leftArea = (left.bbox[1] - left.bbox[3]) * (left.bbox[2] - left.bbox[0]);
-    const rightArea = (right.bbox[1] - right.bbox[3]) * (right.bbox[2] - right.bbox[0]);
-
-    return right.score * rightArea - left.score * leftArea;
-  })[0];
-}
 
 async function detectFaces(
   runtime: LoadedRuntime,
@@ -177,40 +57,14 @@ async function detectFaces(
   });
 
   return decodeScrfdOutputs(outputs, {
-    confidenceThreshold: options.confidenceThreshold ?? DEFAULT_DETECTION_CONFIDENCE,
-    nmsThreshold: 0.4,
-    maxDetections: options.maxDetections ?? DEFAULT_MAX_DETECTIONS,
+    confThresh: options.confidenceThreshold ?? DEFAULT_DETECTION_CONFIDENCE,
+    nmsThresh: 0.4,
+    maxDets: options.maxDetections ?? DEFAULT_MAX_DETECTIONS,
   });
 }
 
-function scaleBoundingBoxToImage(bbox: FaceBoundingBox, image: RgbImage): FaceBoundingBox {
-  const scaleX = image.width / DETECTOR_INPUT_SIZE;
-  const scaleY = image.height / DETECTOR_INPUT_SIZE;
-
-  return [bbox[0] * scaleY, bbox[1] * scaleX, bbox[2] * scaleY, bbox[3] * scaleX];
-}
-
-function scaleLandmarksToImage(landmarks: FaceLandmark[], image: RgbImage): FaceLandmark[] {
-  const scaleX = image.width / DETECTOR_INPUT_SIZE;
-  const scaleY = image.height / DETECTOR_INPUT_SIZE;
-
-  return landmarks.map(([x, y]) => [x * scaleX, y * scaleY]);
-}
-
-function scaleDetectionToImage(detection: Detection, image: RgbImage): Detection {
-  if (image.width === DETECTOR_INPUT_SIZE && image.height === DETECTOR_INPUT_SIZE) {
-    return detection;
-  }
-
-  return {
-    ...detection,
-    bbox: scaleBoundingBoxToImage(detection.bbox, image),
-    landmarks: scaleLandmarksToImage(detection.landmarks, image),
-  };
-}
-
 async function generateEmbedding(runtime: LoadedRuntime, image: RgbImage, detection: Detection) {
-  const imageDetection = scaleDetectionToImage(detection, image);
+  const imageDetection = scaleDetection(detection, image);
   const faceTensorData = buildFaceEmbeddingTensor(image, imageDetection.bbox, imageDetection.landmarks);
   const tensor = new runtime.ort.Tensor("float32", faceTensorData, [1, 3, 112, 112]);
   const outputs = await runtime.embedderSession.run({
@@ -220,7 +74,7 @@ async function generateEmbedding(runtime: LoadedRuntime, image: RgbImage, detect
   const output = outputs[outputName];
   const rawEmbedding = Array.from(output.data as Float32Array);
 
-  return l2Normalize(rawEmbedding);
+  return Array.from(l2Normalize(rawEmbedding));
 }
 
 async function runMiniFasNetLiveness(runtime: LoadedRuntime, image: RgbImage, detection: Detection) {
@@ -230,7 +84,7 @@ async function runMiniFasNetLiveness(runtime: LoadedRuntime, image: RgbImage, de
     detection.score,
     DETECTOR_INPUT_SIZE,
   );
-  const imageDetection = scaleDetectionToImage(detection, image);
+  const imageDetection = scaleDetection(detection, image);
   const livenessTensorData = buildMiniFasNetLivenessTensor(image, imageDetection.bbox);
   const tensor = new runtime.ort.Tensor("float32", livenessTensorData, [1, 3, 128, 128]);
   const outputs = await runtime.livenessSession.run({
@@ -312,6 +166,15 @@ export class OnDeviceFaceEngine implements FaceEngine {
       }
 
       const detection = selectEnrollmentDetection(detections);
+
+      if (!detection) {
+        return {
+          success: true,
+          results: [],
+          count: 0,
+        };
+      }
+
       const detectionResult = await detectionToResult(runtime, image, detection);
 
       if (detectionResult.liveness_verified === false) {
@@ -414,6 +277,14 @@ export class OnDeviceFaceEngine implements FaceEngine {
       }
 
       const detection = selectEnrollmentDetection(detections);
+
+      if (!detection) {
+        return {
+          success: false,
+          error: "No high-confidence face detected",
+        };
+      }
+
       const liveness = await runMiniFasNetLiveness(runtime, image, detection);
 
       if (!liveness.verified) {

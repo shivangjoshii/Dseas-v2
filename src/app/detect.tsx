@@ -5,7 +5,7 @@ import { CameraView, type CameraCapturedPicture, type CameraType, useCameraPermi
 import { ActionButton } from "@/components/ActionButton";
 import { withTimeout } from "@/services/async/withTimeout";
 import { pickRealtimePictureSize } from "@/services/camera/pictureSize";
-import { OnDeviceFaceEngine } from "@/services/face/onDeviceFaceEngine";
+import { OnDeviceFaceEngine } from "@/services/face/engines/onDeviceFaceEngine";
 import type { FaceDetectionResult, FaceRecognitionResult } from "@/services/face/types";
 import { prepareFaceImageAsync } from "@/services/image/prepareFaceImage";
 
@@ -203,17 +203,32 @@ function predictResult(
 
   const predictionGain = Math.min(MAX_PREDICTION_GAIN, Math.min(elapsedMs, MAX_PREDICTION_MS) / deltaMs);
 
+  const cBbox = current.bbox;
+  const pBbox = previous.bbox;
+  const predictedBbox: FaceRecognitionResult["bbox"] = [
+    clampFrame(cBbox[0] + (cBbox[0] - pBbox[0]) * predictionGain),
+    clampFrame(cBbox[1] + (cBbox[1] - pBbox[1]) * predictionGain),
+    clampFrame(cBbox[2] + (cBbox[2] - pBbox[2]) * predictionGain),
+    clampFrame(cBbox[3] + (cBbox[3] - pBbox[3]) * predictionGain),
+  ];
+
+  const cLandmarks = current.landmarks;
+  const pLandmarks = previous.landmarks;
+  const predictedLandmarks: FaceRecognitionResult["landmarks"] = [];
+
+  for (let i = 0; i < cLandmarks.length; i++) {
+    const cl = cLandmarks[i];
+    const pl = pLandmarks[i] ?? cl;
+    predictedLandmarks.push([
+      clampFrame(cl[0] + (cl[0] - pl[0]) * predictionGain),
+      clampFrame(cl[1] + (cl[1] - pl[1]) * predictionGain),
+    ]);
+  }
+
   return {
     ...current,
-    bbox: current.bbox.map((value, index) => clampFrame(value + (value - previous.bbox[index]) * predictionGain)) as FaceRecognitionResult["bbox"],
-    landmarks: current.landmarks.map((landmark, index) => {
-      const previousLandmark = previous.landmarks[index] ?? landmark;
-
-      return [
-        clampFrame(landmark[0] + (landmark[0] - previousLandmark[0]) * predictionGain),
-        clampFrame(landmark[1] + (landmark[1] - previousLandmark[1]) * predictionGain),
-      ];
-    }),
+    bbox: predictedBbox,
+    landmarks: predictedLandmarks,
   };
 }
 

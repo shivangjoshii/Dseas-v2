@@ -1,8 +1,8 @@
 import { Asset } from "expo-asset";
 
-import detectorModelAsset from "../../../assets/models/scrfd_500m_gnkps_v2.onnx";
-import embedderModelAsset from "../../../assets/models/edgeface_xs_gamma_06.onnx";
-import livenessModelAsset from "../../../assets/models/minifasnet_quantized.onnx";
+import detectorModelAsset from "../../../../assets/models/scrfd_500m_gnkps_v2.onnx";
+import embedderModelAsset from "../../../../assets/models/edgeface_xs_gamma_06.onnx";
+import livenessModelAsset from "../../../../assets/models/minifasnet_quantized.onnx";
 
 async function resolveBundledAssetUri(assetModule: number) {
   const asset = Asset.fromModule(assetModule);

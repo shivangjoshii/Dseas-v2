@@ -1,6 +1,6 @@
 import * as Network from "expo-network";
 
-import { BackendFaceEngine } from "@/services/face/backendFaceEngine";
+import { BackendFaceEngine } from "@/services/face/engines/backendFaceEngine";
 import {
   clearSyncedAttendanceRecords,
   deleteAttendanceRecord,

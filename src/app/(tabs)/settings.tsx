@@ -9,8 +9,8 @@ import { AppIcon } from "@/components/AppIcon";
 import { FloatingSnackbar, type SnackbarState } from "@/components/FloatingSnackbar";
 import { withTimeout } from "@/services/async/withTimeout";
 import { DEFAULT_FACE_API_BASE_URL, normalizeApiBaseUrl } from "@/services/config/faceBackend";
-import { BackendFaceEngine } from "@/services/face/backendFaceEngine";
-import { OnDeviceFaceEngine } from "@/services/face/onDeviceFaceEngine";
+import { BackendFaceEngine } from "@/services/face/engines/backendFaceEngine";
+import { OnDeviceFaceEngine } from "@/services/face/engines/onDeviceFaceEngine";
 import { getEngineSetting, getFaceDatabase, getUnsyncedAttendanceRecords, setEngineSetting } from "@/services/storage/database";
 import { syncAttendanceQueue } from "@/services/sync/syncService";
 
