@@ -3,11 +3,13 @@ import { ScrollView, StyleSheet, Text, View, type DimensionValue } from "react-n
 import { CameraView, type CameraCapturedPicture, type CameraType, useCameraPermissions } from "expo-camera";
 
 import { ActionButton } from "@/components/ActionButton";
+import { FloatingSnackbar, type SnackbarState } from "@/components/FloatingSnackbar";
 import { withTimeout } from "@/services/async/withTimeout";
 import { pickRealtimePictureSize } from "@/services/camera/pictureSize";
 import { OnDeviceFaceEngine } from "@/services/face/onDeviceFaceEngine";
 import type { FaceDetectionResult, FaceRecognitionResult } from "@/services/face/types";
 import { prepareFaceImageAsync } from "@/services/image/prepareFaceImage";
+import { saveAttendanceRecord } from "@/services/storage/database";
 
 const FRAME_SIZE = 320;
 const LIVE_CAPTURE_SIZE = 224;
@@ -24,6 +26,7 @@ const MAX_PREDICTION_MS = 320;
 const MAX_PREDICTION_GAIN = 0.82;
 const HEAD_TURN_RANGE_THRESHOLD = 0.06;
 const ACTIVE_LIVENESS_MIN_SAMPLES = 2;
+const ATTENDANCE_MARK_COOLDOWN_MS = 60 * 1000;
 
 type ActiveLivenessTracker = {
   maxYaw: number | null;
@@ -316,6 +319,7 @@ export default function DetectScreen() {
     recognition: "warming up",
   });
   const [results, setResults] = useState<FaceRecognitionResult[]>([]);
+  const [snackbar, setSnackbar] = useState<SnackbarState>({ message: "", visible: false });
   const overlayFrameRef = useRef<number | null>(null);
   const displayedResultsRef = useRef<FaceRecognitionResult[]>([]);
   const previousTargetResultsRef = useRef<FaceRecognitionResult[]>([]);
@@ -328,8 +332,14 @@ export default function DetectScreen() {
   const recognitionStatusRef = useRef("warming up");
   const noFaceSinceRef = useRef<number | null>(null);
   const lastStatusAtRef = useRef(0);
+  const attendanceInFlightRef = useRef<Set<string>>(new Set());
+  const lastAttendanceMarkedAtRef = useRef<Record<string, number>>({});
   const activeLivenessRef = useRef(createActiveLivenessTracker());
   const [activeLivenessVerified, setActiveLivenessVerified] = useState(false);
+
+  const showSnackbar = useCallback((message: string, tone: SnackbarState["tone"] = "info") => {
+    setSnackbar({ message, tone, visible: true });
+  }, []);
 
   const setRecognitionStatus = useCallback((recognition: string) => {
     if (recognitionStatusRef.current === recognition) {
@@ -396,6 +406,50 @@ export default function DetectScreen() {
       setPictureSize(undefined);
     }
   }, []);
+
+  const maybeMarkAttendance = useCallback(async (recognitions: FaceRecognitionResult[]) => {
+    const match = recognitions.find(
+      (result) => result.person_id !== "unknown" && result.liveness_verified !== false && result.similarity > 0,
+    );
+
+    if (!match) {
+      return;
+    }
+
+    const now = Date.now();
+    const lastMarkedAt = lastAttendanceMarkedAtRef.current[match.person_id] ?? 0;
+
+    if (attendanceInFlightRef.current.has(match.person_id) || now - lastMarkedAt < ATTENDANCE_MARK_COOLDOWN_MS) {
+      return;
+    }
+
+    attendanceInFlightRef.current.add(match.person_id);
+
+    try {
+      await saveAttendanceRecord({
+        person_id: match.person_id,
+        name: match.name,
+        confidence: match.similarity,
+        liveness_verified: true,
+        location: "MOBILE_LIVE_DETECTION_AUTO",
+        synced: false,
+        cloud_id: null,
+        source: "local",
+      });
+
+      lastAttendanceMarkedAtRef.current[match.person_id] = now;
+      const confidence = `${(match.similarity * 100).toFixed(1)}%`;
+      setRecognitionStatus("attendance marked");
+      setStatus(`Attendance marked for ${match.name} (${confidence}).`);
+      showSnackbar(`Attendance marked: ${match.name} | ID ${match.person_id} | ${confidence}`, "success");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Attendance mark failed";
+      setStatus(message);
+      showSnackbar(message, "error");
+    } finally {
+      attendanceInFlightRef.current.delete(match.person_id);
+    }
+  }, [setRecognitionStatus, showSnackbar]);
 
   useEffect(() => {
     if (!isLive) {
@@ -496,6 +550,7 @@ export default function DetectScreen() {
 
           latestRecognitionsRef.current = response.results;
           setRecognitionStatus(response.results.length > 0 ? "matched" : "no match");
+          void maybeMarkAttendance(response.results);
         })
         .catch((error) => {
           if (!cancelled) {
@@ -607,7 +662,7 @@ export default function DetectScreen() {
       }
 
     };
-  }, [cameraReady, isLive, permission?.granted, setRecognitionStatus, updateActiveLiveness, updateOverlayTo]);
+  }, [cameraReady, isLive, maybeMarkAttendance, permission?.granted, setRecognitionStatus, updateActiveLiveness, updateOverlayTo]);
 
   function switchCamera() {
     setCameraReady(false);
@@ -620,6 +675,7 @@ export default function DetectScreen() {
     latestRecognitionsRef.current = [];
     recognitionInFlightRef.current = false;
     lastRecognitionAtRef.current = 0;
+    attendanceInFlightRef.current.clear();
     noFaceSinceRef.current = null;
     activeLivenessRef.current = createActiveLivenessTracker();
     setActiveLivenessVerified(false);
@@ -644,8 +700,9 @@ export default function DetectScreen() {
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <View style={styles.cameraFrame}>
+    <View style={styles.screen}>
+      <ScrollView contentContainerStyle={styles.container}>
+        <View style={styles.cameraFrame}>
         <CameraView
           animateShutter={false}
           ref={cameraRef}
@@ -685,7 +742,14 @@ export default function DetectScreen() {
           Turn your head slightly left and right. Frames stay offline; recognition starts only after active liveness passes.
         </Text>
       </View>
-    </ScrollView>
+      </ScrollView>
+      <FloatingSnackbar
+        message={snackbar.message}
+        onDismiss={() => setSnackbar((current) => ({ ...current, visible: false }))}
+        tone={snackbar.tone}
+        visible={snackbar.visible}
+      />
+    </View>
   );
 }
 
@@ -789,6 +853,10 @@ const styles = StyleSheet.create({
     color: "#0F172A",
     fontSize: 16,
     fontWeight: "900",
+  },
+  screen: {
+    backgroundColor: "#F7FAFF",
+    flex: 1,
   },
   statusBox: {
     alignItems: "center",
